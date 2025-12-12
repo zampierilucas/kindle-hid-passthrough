@@ -1,0 +1,51 @@
+# Dockerfile for building Kindle BLE HID ARM binary
+# Uses Python 3.9 (oldest available on bullseye with good support)
+# Target: ARMv7 (armhf)
+
+FROM arm32v7/python:3.9-slim-bullseye
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    patchelf \
+    ccache \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python build tools and dependencies
+RUN pip install --no-cache-dir \
+    nuitka \
+    ordered-set \
+    zstandard \
+    bumble>=0.0.193 \
+    aiofiles>=23.0.0
+
+# Enable ccache for faster C compilation
+ENV CCACHE_DIR=/ccache
+ENV PATH="/usr/lib/ccache:${PATH}"
+
+# Set working directory
+WORKDIR /build
+
+# Copy source files
+COPY bumble_ble_hid/*.py /build/
+COPY bumble_ble_hid/button_config.json /build/
+COPY bumble_ble_hid/requirements.txt /build/
+
+# Build with Nuitka
+# --mode=onefile creates a single executable
+# --include-data-file bundles the config
+# -j 0 uses all available CPU cores for parallel compilation
+# --lto=no disables link-time optimization for much faster builds
+RUN python3 -m nuitka \
+    --mode=onefile \
+    -j 4 \
+    --lto=no \
+    --output-filename=kindle-ble-hid \
+    --include-data-file=button_config.json=button_config.json \
+    --nofollow-import-to=pytest \
+    --nofollow-import-to=unittest \
+    --nofollow-import-to=setuptools \
+    ble_hid_daemon.py
+
+# Output will be at /build/kindle-ble-hid

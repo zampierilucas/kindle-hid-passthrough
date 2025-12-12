@@ -1,0 +1,16 @@
+# Device configuration
+# Format: ADDRESS [PROTOCOL]
+#
+# PROTOCOL: ble (default) or classic
+#
+# Examples:
+#   AA:BB:CC:DD:EE:FF              # BLE device (default)
+#   AA:BB:CC:DD:EE:FF ble          # BLE device (explicit)
+#   AA:BB:CC:DD:EE:FF classic      # Classic Bluetooth device
+#
+# To pair a new device:
+#   python main.py --pair --protocol classic
+#
+# Only the first non-comment line is used.
+
+# 98:B9:EA:01:67:68 classic

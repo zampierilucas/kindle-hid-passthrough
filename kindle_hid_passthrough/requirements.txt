@@ -1,0 +1,5 @@
+# Google Bumble BLE stack
+bumble>=0.0.193
+
+# Optional: for better async support
+aiofiles>=23.0.0

@@ -1,0 +1,101 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          hid-passthrough
+# Required-Start:    $remote_fs $syslog
+# Required-Stop:     $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: HID Passthrough Daemon
+# Description:       Userspace Bluetooth HID host with UHID passthrough
+### END INIT INFO
+
+DAEMON=/mnt/us/kindle_hid_passthrough/daemon.py
+PYTHON=/mnt/us/python3.10-kindle/python3-wrapper.sh
+PIDFILE=/var/run/hid-passthrough.pid
+LOGFILE=/var/log/hid_passthrough.log
+
+start() {
+    echo "Starting HID passthrough daemon..."
+    if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
+        echo "HID passthrough daemon is already running"
+        return 1
+    fi
+
+    # Load Bluetooth kernel module if not loaded
+    if ! lsmod | grep -q wmt_cdev_bt; then
+        echo "Loading wmt_cdev_bt kernel module..."
+        /sbin/insmod /lib/modules/4.9.77-lab126/extra/wmt_cdev_bt.ko
+        sleep 1
+    fi
+
+    # Verify /dev/stpbt exists
+    if [ ! -c /dev/stpbt ]; then
+        echo "ERROR: /dev/stpbt device not available"
+        return 1
+    fi
+
+    # Stop any existing Bluetooth processes
+    killall bluetoothd 2>/dev/null || true
+    killall vhci_stpbt_bridge 2>/dev/null || true
+    sleep 1
+
+    # Start daemon in background
+    nohup "$PYTHON" "$DAEMON" >> "$LOGFILE" 2>&1 &
+    echo $! > "$PIDFILE"
+    echo "HID passthrough daemon started (PID: $(cat $PIDFILE))"
+}
+
+stop() {
+    echo "Stopping HID passthrough daemon..."
+    if [ ! -f "$PIDFILE" ]; then
+        echo "HID passthrough daemon is not running"
+        return 1
+    fi
+
+    PID=$(cat "$PIDFILE")
+    if kill -0 "$PID" 2>/dev/null; then
+        kill "$PID"
+        sleep 2
+        if kill -0 "$PID" 2>/dev/null; then
+            kill -9 "$PID"
+        fi
+        rm -f "$PIDFILE"
+        echo "HID passthrough daemon stopped"
+    else
+        echo "HID passthrough daemon is not running (stale PID file)"
+        rm -f "$PIDFILE"
+    fi
+}
+
+status() {
+    if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
+        echo "HID passthrough daemon is running (PID: $(cat $PIDFILE))"
+        return 0
+    else
+        echo "HID passthrough daemon is not running"
+        return 1
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        sleep 2
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit 0
