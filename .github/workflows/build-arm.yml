@@ -10,38 +10,25 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    runs-on: [self-hosted, armhf]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install build dependencies
+      - name: Build ARMv7 binary with Docker
         run: |
-          sudo apt-get update
-          sudo apt-get install -y patchelf ccache
-          pip install nuitka ordered-set zstandard
-          pip install bumble>=0.0.193 aiofiles>=23.0.0
+          docker build \
+            --platform linux/arm/v7 \
+            -f Dockerfile.arm \
+            -t kindle-hid-passthrough-builder \
+            .
 
-      - name: Build with Nuitka
+      - name: Extract binary
         run: |
-          python -m nuitka \
-            --mode=onefile \
-            --jobs=$(nproc) \
-            --lto=yes \
-            --show-progress \
-            --output-filename=kindle-hid-passthrough \
-            --include-package=kindle_hid_passthrough \
-            --include-data-file=kindle_hid_passthrough/config.ini=kindle_hid_passthrough/config.ini \
-            --nofollow-import-to=pytest \
-            --nofollow-import-to=unittest \
-            --nofollow-import-to=setuptools \
-            kindle_hid_passthrough/main.py
+          CONTAINER_ID=$(docker create kindle-hid-passthrough-builder)
+          docker cp "$CONTAINER_ID:/build/kindle-hid-passthrough" ./kindle-hid-passthrough
+          docker rm "$CONTAINER_ID"
 
       - name: Show binary info
         run: |
@@ -51,7 +38,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kindle-hid-passthrough-arm
+          name: kindle-hid-passthrough-armv7
           path: kindle-hid-passthrough
 
       - name: Create Release
