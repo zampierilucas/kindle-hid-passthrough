@@ -10,71 +10,28 @@
 ### END INIT INFO
 
 DAEMON=/mnt/us/kindle_hid_passthrough/daemon.py
-PYTHON=/mnt/us/python3.10-kindle/python3-wrapper.sh
-PIDFILE=/var/run/hid-passthrough.pid
-LOGFILE=/var/log/hid_passthrough.log
 
-start() {
-    echo "Starting HID passthrough daemon..."
-    if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
-        echo "HID passthrough daemon is already running"
-        return 1
-    fi
-
-    # Load Bluetooth kernel module if not loaded
-    if ! lsmod | grep -q wmt_cdev_bt; then
-        echo "Loading wmt_cdev_bt kernel module..."
-        /sbin/insmod /lib/modules/4.9.77-lab126/extra/wmt_cdev_bt.ko
-        sleep 1
-    fi
-
-    # Verify /dev/stpbt exists
-    if [ ! -c /dev/stpbt ]; then
-        echo "ERROR: /dev/stpbt device not available"
-        return 1
-    fi
-
-    # Stop any existing Bluetooth processes
-    killall bluetoothd 2>/dev/null || true
-    killall vhci_stpbt_bridge 2>/dev/null || true
-    sleep 1
-
-    # Start daemon in background
-    nohup "$PYTHON" "$DAEMON" >> "$LOGFILE" 2>&1 &
-    echo $! > "$PIDFILE"
-    echo "HID passthrough daemon started (PID: $(cat $PIDFILE))"
-}
-
-stop() {
-    echo "Stopping HID passthrough daemon..."
-    if [ ! -f "$PIDFILE" ]; then
-        echo "HID passthrough daemon is not running"
-        return 1
-    fi
-
-    PID=$(cat "$PIDFILE")
-    if kill -0 "$PID" 2>/dev/null; then
-        kill "$PID"
-        sleep 2
-        if kill -0 "$PID" 2>/dev/null; then
-            kill -9 "$PID"
-        fi
-        rm -f "$PIDFILE"
-        echo "HID passthrough daemon stopped"
-    else
-        echo "HID passthrough daemon is not running (stale PID file)"
-        rm -f "$PIDFILE"
-    fi
+get_pid() {
+    pgrep -f "$DAEMON" 2>/dev/null
 }
 
 status() {
-    if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
-        echo "HID passthrough daemon is running (PID: $(cat $PIDFILE))"
+    PID=$(get_pid)
+    if [ -n "$PID" ]; then
+        echo "HID passthrough daemon is running (PID: $PID)"
         return 0
     else
         echo "HID passthrough daemon is not running"
         return 1
     fi
+}
+
+start() {
+    echo "Use: initctl start hid-passthrough"
+}
+
+stop() {
+    echo "Use: initctl stop hid-passthrough"
 }
 
 case "$1" in
