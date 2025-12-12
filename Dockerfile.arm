@@ -1,8 +1,8 @@
-# Dockerfile for building Kindle BLE HID ARM binary
-# Uses Python 3.9 (oldest available on bullseye with good support)
-# Target: ARMv7 (armhf)
+# Dockerfile for building Kindle HID Passthrough ARM binary
+# Uses Python 3.10 to match Kindle runtime
+# Target: ARMv7 hard-float (armhf)
 
-FROM arm32v7/python:3.9-slim-bullseye
+FROM arm32v7/python:3.10-slim-bullseye
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -28,24 +28,23 @@ ENV PATH="/usr/lib/ccache:${PATH}"
 WORKDIR /build
 
 # Copy source files
-COPY bumble_ble_hid/*.py /build/
-COPY bumble_ble_hid/button_config.json /build/
-COPY bumble_ble_hid/requirements.txt /build/
+COPY kindle_hid_passthrough/*.py /build/kindle_hid_passthrough/
+COPY kindle_hid_passthrough/config.ini /build/kindle_hid_passthrough/
 
 # Build with Nuitka
 # --mode=onefile creates a single executable
-# --include-data-file bundles the config
-# -j 0 uses all available CPU cores for parallel compilation
-# --lto=no disables link-time optimization for much faster builds
+# -j 4 uses 4 CPU cores for parallel compilation
+# --lto=no disables link-time optimization for faster builds
 RUN python3 -m nuitka \
     --mode=onefile \
     -j 4 \
     --lto=no \
-    --output-filename=kindle-ble-hid \
-    --include-data-file=button_config.json=button_config.json \
+    --output-filename=kindle-hid-passthrough \
+    --include-package=kindle_hid_passthrough \
+    --include-data-file=kindle_hid_passthrough/config.ini=kindle_hid_passthrough/config.ini \
     --nofollow-import-to=pytest \
     --nofollow-import-to=unittest \
     --nofollow-import-to=setuptools \
-    ble_hid_daemon.py
+    kindle_hid_passthrough/main.py
 
-# Output will be at /build/kindle-ble-hid
+# Output will be at /build/kindle-hid-passthrough

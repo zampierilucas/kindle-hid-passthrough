@@ -1,0 +1,62 @@
+name: Build ARM Binary
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf ccache
+          pip install nuitka ordered-set zstandard
+          pip install bumble>=0.0.193 aiofiles>=23.0.0
+
+      - name: Build with Nuitka
+        run: |
+          python -m nuitka \
+            --mode=onefile \
+            -j $(nproc) \
+            --lto=no \
+            --output-filename=kindle-hid-passthrough \
+            --include-package=kindle_hid_passthrough \
+            --include-data-file=kindle_hid_passthrough/config.ini=kindle_hid_passthrough/config.ini \
+            --nofollow-import-to=pytest \
+            --nofollow-import-to=unittest \
+            --nofollow-import-to=setuptools \
+            kindle_hid_passthrough/main.py
+
+      - name: Show binary info
+        run: |
+          file kindle-hid-passthrough
+          ls -lh kindle-hid-passthrough
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kindle-hid-passthrough-arm
+          path: kindle-hid-passthrough
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: kindle-hid-passthrough
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
