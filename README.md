@@ -100,6 +100,14 @@ The Kindle's kernel Bluetooth stack has bugs that prevent proper HID pairing. By
 | Classic Bluetooth (BR/EDR) | Working | Gamepads, keyboards |
 | BLE (Bluetooth Low Energy) | Working | Page turners, remotes |
 
+## Mapping Inputs to Actions
+
+This project creates standard Linux input devices (`/dev/input/eventX`) but does not handle mapping button presses to actions.
+
+On **Kindle**, the reading application ignores standard input devices, so you need a separate input mapper to trigger actions like page turns. Recommended: [kindle-button-mapper-rs](https://github.com/zampierilucas/kindle-button-mapper-rs) - A lightweight daemon that maps HID inputs to Kindle actions.
+
+On more **open devices like Kobo**, applications may read directly from `/dev/input/eventX`, so the HID devices created by this project could work out of the box without additional mapping.
+
 ## Hardware
 
 Tested on:
