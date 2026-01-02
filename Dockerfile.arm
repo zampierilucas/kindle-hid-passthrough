@@ -27,6 +27,10 @@ RUN pip install --no-cache-dir \
 ENV CCACHE_DIR=/ccache
 ENV PATH="/usr/lib/ccache:${PATH}"
 
+# ARM-specific fix: -mword-relocations fixes "conditional branch out of range" error
+# that occurs with large generated code (like bumble.hci module)
+ENV CFLAGS="-mword-relocations"
+
 # Set working directory
 WORKDIR /build
 
@@ -37,10 +41,13 @@ COPY kindle_hid_passthrough/config.ini /build/kindle_hid_passthrough/
 # Build with Nuitka
 # --mode=onefile creates a single executable
 # --lto=no disables link-time optimization (faster for QEMU emulation)
+# --low-memory reduces memory usage during compilation
+# -mword-relocations passed via CFLAGS fixes ARM branch range issues
 RUN python3 -m nuitka \
     --mode=onefile \
     --jobs=$(nproc) \
     --lto=no \
+    --low-memory \
     --show-progress \
     --output-filename=kindle-hid-passthrough \
     --include-package=kindle_hid_passthrough \
