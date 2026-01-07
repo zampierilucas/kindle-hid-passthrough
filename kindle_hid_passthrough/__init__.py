@@ -17,21 +17,20 @@ Usage:
     python main.py --daemon
 
     # Programmatic use
-    from host import BLEHIDHost
-    from classic_host import ClassicHIDHost
-    from config import create_host, Protocol
+    from kindle_hid_passthrough import BLEHIDHost, ClassicHIDHost
+    from kindle_hid_passthrough import create_host, Protocol
 
     host = create_host(Protocol.CLASSIC)
     await host.run(device_address)
 """
 
-from host import BLEHIDHost, __version__
-from config import config, Protocol, create_host
-from logging_utils import log
-from device_cache import DeviceCache
+from .host import BLEHIDHost, __version__
+from .config import config, Protocol, create_host
+from .logging_utils import log
+from .device_cache import DeviceCache
 
 try:
-    from classic_host import ClassicHIDHost
+    from .classic_host import ClassicHIDHost
 except ImportError:
     ClassicHIDHost = None
 

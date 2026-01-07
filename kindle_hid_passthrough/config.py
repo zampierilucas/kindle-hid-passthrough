@@ -39,7 +39,23 @@ class Config:
 
     def _load(self):
         """Load configuration from config.ini or use defaults"""
-        self.base_path = '/mnt/us/kindle_hid_passthrough'
+        # Determine base path dynamically:
+        # 1. Environment variable (set by run.sh)
+        # 2. Derive from package location (lib/kindle_hid_passthrough/ -> base)
+        # 3. Fallback to /mnt/us/hid-passthrough
+        if os.environ.get('KINDLE_HID_BASE'):
+            self.base_path = os.environ['KINDLE_HID_BASE']
+        else:
+            # __file__ is in lib/kindle_hid_passthrough/config.py
+            # Go up 2 levels to get base directory
+            pkg_dir = os.path.dirname(os.path.abspath(__file__))
+            lib_dir = os.path.dirname(pkg_dir)
+            potential_base = os.path.dirname(lib_dir)
+            # Verify this looks like our install directory
+            if os.path.exists(os.path.join(potential_base, 'run.sh')):
+                self.base_path = potential_base
+            else:
+                self.base_path = '/mnt/us/hid-passthrough'
 
         config_file = os.path.join(self.base_path, 'config.ini')
         self._parser = configparser.ConfigParser()
@@ -181,10 +197,10 @@ def create_host(protocol: Protocol = None, transport_spec: str = None):
         protocol = config.protocol
 
     if protocol == Protocol.CLASSIC:
-        from classic_host import ClassicHIDHost
+        from .classic_host import ClassicHIDHost
         return ClassicHIDHost(transport_spec)
     else:
-        from host import BLEHIDHost
+        from .host import BLEHIDHost
         return BLEHIDHost(transport_spec)
 
 

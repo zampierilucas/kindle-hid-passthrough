@@ -33,10 +33,10 @@ from bumble.gatt import (
 from bumble.transport import open_transport
 from bumble.core import AdvertisingData, InvalidStateError, ProtocolError
 
-from config import config
-from logging_utils import log
-from device_cache import DeviceCache
-from pairing import create_pairing_config, create_keystore
+from .config import config
+from .logging_utils import log
+from .device_cache import DeviceCache
+from .pairing import create_pairing_config, create_keystore
 
 __all__ = ['BLEHIDHost', '__version__']
 
@@ -84,7 +84,7 @@ class BLEHIDHost:
         self.uhid_device = None
         self._uhid_available = False
         try:
-            from uhid_handler import UHIDDevice, Bus, UHIDError
+            from .uhid_handler import UHIDDevice, Bus, UHIDError
             self._UHIDDevice = UHIDDevice
             self._Bus = Bus
             self._UHIDError = UHIDError

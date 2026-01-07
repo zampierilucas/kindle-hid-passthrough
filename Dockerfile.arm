@@ -1,60 +1,61 @@
 # Dockerfile for building Kindle HID Passthrough ARM binary
-# Uses Python 3.10 to match Kindle runtime
+# Uses makeself to create a self-extracting archive
 # Target: ARMv7 hard-float (armhf)
 
 FROM arm32v7/python:3.10-slim-bullseye
 
-# Install build dependencies with retry for flaky network under QEMU
+# Install minimal build dependencies with retry for flaky network under QEMU
 RUN for i in 1 2 3; do \
         apt-get update && \
         apt-get install -y --no-install-recommends \
-            build-essential \
-            patchelf \
-            ccache \
-            libffi-dev \
+            makeself \
         && break || sleep 5; \
     done && rm -rf /var/lib/apt/lists/*
 
-# Install Python build tools and dependencies
-RUN pip install --no-cache-dir \
-    nuitka \
-    ordered-set \
-    zstandard \
-    bumble>=0.0.193 \
-    aiofiles>=23.0.0
-
-# Enable ccache for faster C compilation
-ENV CCACHE_DIR=/ccache
-ENV PATH="/usr/lib/ccache:${PATH}"
-
-# ARM-specific fix: -mword-relocations fixes "conditional branch out of range" error
-# that occurs with large generated code (like bumble.hci module)
-ENV CFLAGS="-mword-relocations"
+# Install bumble WITHOUT cryptography (uses builtin pure-Python crypto)
+# This avoids glibc compatibility issues with cryptography's Rust extensions
+RUN pip install --no-cache-dir --no-deps 'bumble>=0.0.193' && \
+    pip install --no-cache-dir \
+        'aiofiles>=23.0.0' \
+        'pyee>=13.0.0'
 
 # Set working directory
 WORKDIR /build
 
 # Copy source files
-COPY kindle_hid_passthrough/*.py /build/kindle_hid_passthrough/
-COPY kindle_hid_passthrough/config.ini /build/kindle_hid_passthrough/
+COPY kindle_hid_passthrough/ /build/kindle_hid_passthrough/
+COPY pyproject.toml /build/
+COPY scripts/run.sh /build/scripts/
 
-# Build with Nuitka
-# --mode=onefile creates a single executable
-# --lto=no disables link-time optimization (faster for QEMU emulation)
-# --low-memory reduces memory usage during compilation
-# -mword-relocations passed via CFLAGS fixes ARM branch range issues
-RUN python3 -m nuitka \
-    --mode=onefile \
-    --jobs=$(nproc) \
-    --lto=no \
-    --low-memory \
-    --show-progress \
-    --output-filename=kindle-hid-passthrough \
-    --include-package=kindle_hid_passthrough \
-    --include-data-file=kindle_hid_passthrough/config.ini=kindle_hid_passthrough/config.ini \
-    --nofollow-import-to=pytest \
-    --nofollow-import-to=unittest \
-    --nofollow-import-to=setuptools \
-    kindle_hid_passthrough/main.py
+# Build and install our package WITHOUT dependencies
+RUN pip install --no-cache-dir --no-deps .
 
-# Output will be at /build/kindle-hid-passthrough
+# Create the payload directory with all needed files
+RUN mkdir -p /build/payload/lib && \
+    # Copy our package
+    cp -r /usr/local/lib/python3.10/site-packages/kindle_hid_passthrough /build/payload/lib/ && \
+    # Copy bumble and dependencies
+    cp -r /usr/local/lib/python3.10/site-packages/bumble /build/payload/lib/ && \
+    cp -r /usr/local/lib/python3.10/site-packages/aiofiles /build/payload/lib/ && \
+    cp -r /usr/local/lib/python3.10/site-packages/pyee /build/payload/lib/ && \
+    cp -r /usr/local/lib/python3.10/site-packages/typing_extensions* /build/payload/lib/ && \
+    # Copy launcher script
+    cp /build/scripts/run.sh /build/payload/ && \
+    chmod +x /build/payload/run.sh
+
+# Create the self-extracting archive
+# Uses basic makeself options (compatible with 2.4.2)
+# The run.sh script handles installation to persistent location
+RUN mkdir -p /build/dist && \
+    makeself --gzip \
+        /build/payload \
+        /build/dist/kindle-hid-passthrough \
+        "Kindle HID Passthrough" \
+        ./run.sh
+
+# Show result
+RUN ls -lh /build/dist/kindle-hid-passthrough && \
+    echo "=== Archive created ==="
+
+# Output will be at /build/dist/kindle-hid-passthrough
+# Self-extracting shell archive

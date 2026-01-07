@@ -12,7 +12,7 @@ Author: Lucas Zampieri <lzampier@redhat.com>
 from bumble.pairing import PairingConfig, PairingDelegate
 from bumble.keys import JsonKeyStore
 
-from logging_utils import log
+from .logging_utils import log
 
 __all__ = [
     'AutoAcceptPairingDelegate',

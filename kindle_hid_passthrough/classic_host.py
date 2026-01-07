@@ -44,10 +44,10 @@ from bumble.sdp import (
     SDP_PROTOCOL_DESCRIPTOR_LIST_ATTRIBUTE_ID,
 )
 
-from config import config
-from logging_utils import log
-from pairing import create_pairing_config, create_keystore
-from device_cache import DeviceCache
+from .config import config
+from .logging_utils import log
+from .pairing import create_pairing_config, create_keystore
+from .device_cache import DeviceCache
 
 __all__ = ['ClassicHIDHost', '__version__']
 
@@ -98,7 +98,7 @@ class ClassicHIDHost:
         self.uhid_device = None
         self._uhid_available = False
         try:
-            from uhid_handler import UHIDDevice, Bus, UHIDError
+            from .uhid_handler import UHIDDevice, Bus, UHIDError
             self._UHIDDevice = UHIDDevice
             self._Bus = Bus
             self._UHIDError = UHIDError

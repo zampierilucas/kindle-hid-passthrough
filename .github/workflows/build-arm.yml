@@ -33,27 +33,31 @@ jobs:
             --load \
             .
 
-      - name: Extract binary
+      - name: Extract artifacts
         run: |
           CONTAINER_ID=$(docker create kindle-hid-passthrough-builder)
-          docker cp "$CONTAINER_ID:/build/kindle-hid-passthrough" ./kindle-hid-passthrough
+          docker cp "$CONTAINER_ID:/build/dist/." ./dist/
           docker rm "$CONTAINER_ID"
 
-      - name: Show binary info
+      - name: Show artifact info
         run: |
-          file kindle-hid-passthrough
-          ls -lh kindle-hid-passthrough
+          echo "=== Binary info ==="
+          file dist/kindle-hid-passthrough
+          ls -lh dist/kindle-hid-passthrough
+          echo ""
+          echo "=== Size ==="
+          du -sh dist/kindle-hid-passthrough
 
-      - name: Upload artifact
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: kindle-hid-passthrough-armv7
-          path: kindle-hid-passthrough
+          path: dist/kindle-hid-passthrough
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
-          files: kindle-hid-passthrough
+          files: dist/kindle-hid-passthrough
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

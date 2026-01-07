@@ -21,28 +21,44 @@ BT HID Device  -->  /dev/stpbt  -->  Bumble (userspace BT stack)  -->  /dev/uhid
 ## Requirements
 
 - Python 3.10 for Kindle - available from [MobileRead forums](https://www.mobileread.com/forums/showthread.php?t=367713)
-- [Google Bumble](https://github.com/google/bumble) >= 0.0.193
 - Root access on Kindle (via USBNetwork or similar)
 - Linux kernel with UHID support (`CONFIG_UHID`) - enabled by default on Kindle
 
 ## Installation
 
+### From Release (Recommended)
+
 1. Install Python 3.10 on your Kindle at `/mnt/us/python3.10-kindle/`
 
-2. Copy the project to Kindle:
+2. Download the latest release from [GitHub Releases](https://github.com/zampierilucas/kindle-hid-passthrough/releases)
+
+3. Copy to Kindle and run:
    ```bash
-   scp -r kindle_hid_passthrough kindle:/mnt/us/kindle_hid_passthrough/
+   scp kindle-hid-passthrough kindle:/mnt/us/
+   ssh kindle '/mnt/us/kindle-hid-passthrough'
    ```
 
-3. Install the init script:
-   ```bash
-   ssh kindle "cp /mnt/us/kindle_hid_passthrough/hid-passthrough.init /etc/init.d/hid-passthrough && chmod +x /etc/init.d/hid-passthrough"
-   ```
+   On first run, it extracts to `/mnt/us/hid-passthrough/` and runs automatically.
 
-4. Configure your device in `/mnt/us/kindle_hid_passthrough/devices.conf`:
+4. Configure your device in `/mnt/us/hid-passthrough/devices.conf`:
    ```
    AA:BB:CC:DD:EE:FF classic
    ```
+
+### Building from Source
+
+Build the self-extracting archive locally:
+
+```bash
+# Requires Docker with QEMU support for ARM emulation
+./build-arm-binary.sh
+
+# Or manually:
+docker buildx build --platform linux/arm/v7 -f Dockerfile.arm -t kindle-hid-arm --load .
+docker cp $(docker create kindle-hid-arm):/build/dist/kindle-hid-passthrough dist/
+```
+
+Output: `dist/kindle-hid-passthrough` (~1.5MB self-extracting archive)
 
 ## Usage
 
@@ -50,32 +66,30 @@ BT HID Device  -->  /dev/stpbt  -->  Bumble (userspace BT stack)  -->  /dev/uhid
 
 ```bash
 # Interactive pairing (Classic Bluetooth)
-ssh kindle "/mnt/us/python3.10-kindle/python3-wrapper.sh /mnt/us/kindle_hid_passthrough/main.py --pair --protocol classic"
+ssh kindle '/mnt/us/hid-passthrough/run.sh --pair --protocol classic'
 
 # Interactive pairing (BLE)
-ssh kindle "/mnt/us/python3.10-kindle/python3-wrapper.sh /mnt/us/kindle_hid_passthrough/main.py --pair --protocol ble"
+ssh kindle '/mnt/us/hid-passthrough/run.sh --pair --protocol ble'
 ```
 
 ### Running the Daemon
 
 ```bash
-# Start daemon
-ssh kindle "/etc/init.d/hid-passthrough start"
-
-# Check status
-ssh kindle "/etc/init.d/hid-passthrough status"
+# Start daemon (auto-reconnect mode)
+ssh kindle '/mnt/us/hid-passthrough/run.sh --daemon'
 
 # View logs
-ssh kindle "tail -f /var/log/hid_passthrough.log"
-
-# Stop daemon
-ssh kindle "/etc/init.d/hid-passthrough stop"
+ssh kindle 'tail -f /var/log/hid_passthrough.log'
 ```
 
 ### Manual Execution (Debug)
 
 ```bash
-ssh kindle "/mnt/us/python3.10-kindle/python3-wrapper.sh /mnt/us/kindle_hid_passthrough/main.py"
+# Run once (connects to device in devices.conf)
+ssh kindle '/mnt/us/hid-passthrough/run.sh'
+
+# Show help
+ssh kindle '/mnt/us/hid-passthrough/run.sh --help'
 ```
 
 ## How It Works
@@ -126,22 +140,16 @@ just restart     # Restart daemon
 just logs        # Follow logs
 ```
 
-### Project Structure
+### Creating a Release
 
+Releases are automated via GitHub Actions. Push a version tag to create a release:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
 ```
-kindle_hid_passthrough/
-├── main.py              # Entry point (--pair, --daemon modes)
-├── daemon.py            # Daemon with auto-reconnect
-├── config.py            # Configuration management
-├── host.py              # BLE HID host implementation
-├── classic_host.py      # Classic Bluetooth HID host
-├── uhid_handler.py      # UHID device creation
-├── pairing.py           # Pairing and keystore
-├── device_cache.py      # Report descriptor caching
-├── logging_utils.py     # Logging utilities
-├── devices.conf         # Device configuration
-└── hid-passthrough.init # Init script
-```
+
+This triggers the build workflow which compiles the ARM binary and attaches it to the GitHub release.
 
 ## References
 
