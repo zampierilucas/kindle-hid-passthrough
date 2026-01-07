@@ -1,0 +1,97 @@
+# Dockerfile for cross-compiling Kindle HID Passthrough ARM binary
+# Uses x86_64 host with ARM cross-compilation toolchain
+# Target: ARMv7 hard-float (armhf) with glibc 2.19+ compatibility
+# Estimated build time: 1-1.5 hours (vs 6+ hours with QEMU emulation)
+
+FROM ubuntu:20.04
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install cross-compilation toolchain and build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc-arm-linux-gnueabihf \
+        g++-arm-linux-gnueabihf \
+        binutils-arm-linux-gnueabihf \
+        wget \
+        curl \
+        ca-certificates \
+        python3 \
+        python3-pip \
+        python3-dev \
+        pkg-config \
+        ccache \
+        patchelf \
+        file \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download pre-built ARM Python from python-build-standalone
+# Using cpython-3.10.14+20240224-armv7-unknown-linux-gnueabihf-install_only.tar.gz
+ENV PYTHON_STANDALONE_VERSION=20240224
+ENV PYTHON_VERSION=3.10.14
+RUN cd /opt && \
+    wget https://github.com/indygreg/python-build-standalone/releases/download/${PYTHON_STANDALONE_VERSION}/cpython-${PYTHON_VERSION}+${PYTHON_STANDALONE_VERSION}-armv7-unknown-linux-gnueabihf-install_only.tar.gz && \
+    tar xzf cpython-${PYTHON_VERSION}+${PYTHON_STANDALONE_VERSION}-armv7-unknown-linux-gnueabihf-install_only.tar.gz && \
+    rm cpython-${PYTHON_VERSION}+${PYTHON_STANDALONE_VERSION}-armv7-unknown-linux-gnueabihf-install_only.tar.gz
+
+# Install Nuitka and dependencies on host Python
+RUN pip3 install --no-cache-dir \
+    nuitka \
+    ordered-set \
+    zstandard
+
+# Install target packages into ARM Python using pip with --target
+# First, we need to set up paths for the ARM Python
+ENV ARM_PYTHON_ROOT=/opt/python
+ENV ARM_PYTHON_STDLIB=${ARM_PYTHON_ROOT}/lib/python3.10
+ENV ARM_PYTHON_SITEPACKAGES=${ARM_PYTHON_STDLIB}/site-packages
+
+# Download and install bumble and aiofiles for ARM Python
+RUN pip3 download --no-deps --dest /tmp/wheels bumble>=0.0.193 aiofiles>=23.0.0 && \
+    pip3 download --no-deps --dest /tmp/wheels bumble && \
+    cd /tmp/wheels && \
+    for wheel in *.whl; do \
+        unzip -q "$wheel" -d ${ARM_PYTHON_SITEPACKAGES}/ || true; \
+    done && \
+    rm -rf /tmp/wheels
+
+# Set up cross-compilation environment for Nuitka
+ENV CC=arm-linux-gnueabihf-gcc
+ENV CXX=arm-linux-gnueabihf-g++
+ENV AR=arm-linux-gnueabihf-ar
+ENV RANLIB=arm-linux-gnueabihf-ranlib
+
+# Enable ccache for faster C compilation
+ENV CCACHE_DIR=/ccache
+ENV PATH="/usr/lib/ccache:${PATH}"
+
+# Set working directory
+WORKDIR /build
+
+# Copy source files
+COPY kindle_hid_passthrough/*.py /build/kindle_hid_passthrough/
+COPY kindle_hid_passthrough/config.ini /build/kindle_hid_passthrough/
+
+# Build with Nuitka using cross-compilation
+# Use host Python to run Nuitka, but point it to ARM Python for the runtime
+RUN python3 -m nuitka \
+    --mode=onefile \
+    --onefile-tempdir-spec=/mnt/us/tmp \
+    --jobs=$(nproc) \
+    --lto=no \
+    --show-progress \
+    --output-filename=kindle-hid-passthrough \
+    --python-for-scons=${ARM_PYTHON_ROOT}/bin/python3 \
+    --include-package=kindle_hid_passthrough \
+    --include-package=bumble \
+    --nofollow-import-to=bumble \
+    --include-data-file=kindle_hid_passthrough/config.ini=kindle_hid_passthrough/config.ini \
+    --nofollow-import-to=pytest \
+    --nofollow-import-to=unittest \
+    --nofollow-import-to=setuptools \
+    kindle_hid_passthrough/main.py
+
+# Output will be at /build/kindle-hid-passthrough
