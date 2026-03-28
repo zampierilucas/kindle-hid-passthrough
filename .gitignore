@@ -28,3 +28,6 @@ Thumbs.db
 
 # External build directories
 evsieve-kindle/
+.claude/
+future-work.md
+pr-24-*.md
