@@ -1,0 +1,13 @@
+# HID Passthrough - Bluetooth HID host with UHID passthrough
+# For development with Python environment
+start on started wmt
+stop on stopping filesystems
+
+respawn
+respawn limit 5 60
+
+env KINDLE_HID_BASE=/mnt/us/kindle_hid_passthrough
+
+script
+    exec /mnt/us/python3.10-kindle/python3-wrapper.sh /mnt/us/kindle_hid_passthrough/main.py --daemon
+end script

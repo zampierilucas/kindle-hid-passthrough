@@ -1,0 +1,165 @@
+# Dockerfile for building Kindle HID Passthrough ARM binary (glibc)
+# Uses Debian Bookworm (glibc 2.36) with Nuitka standalone + bundled ld-linux
+# Target: ARMv7 hard-float (armhf)
+#
+# Strategy: Nuitka standalone creates a directory with the binary + all .so deps.
+# We bundle the build container's ld-linux-armhf.so.3 and invoke it directly,
+# completely bypassing the Kindle's ancient glibc 2.20 / dynamic linker.
+# No staticx needed — just a directory with everything.
+
+FROM arm32v7/python:3.11-slim-bookworm
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    patchelf \
+    ccache \
+    libffi-dev \
+    zlib1g-dev \
+    linux-libc-dev \
+    libssl-dev \
+    rustc \
+    cargo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python build tools
+RUN pip install --no-cache-dir \
+    nuitka \
+    ordered-set \
+    bumble>=0.0.193 \
+    aiofiles>=23.0.0
+
+# Enable ccache
+ENV CCACHE_DIR=/ccache
+ENV PATH="/usr/lib/ccache:${PATH}"
+
+WORKDIR /build
+
+# Copy source
+COPY kindle_hid_passthrough/*.py /build/kindle_hid_passthrough/
+COPY kindle_hid_passthrough/config.ini /build/kindle_hid_passthrough/
+
+# ARM-specific compiler flags to fix branch range errors
+ENV CFLAGS="-mword-relocations -mlong-calls -ffunction-sections -fdata-sections"
+ENV LDFLAGS="-Wl,--gc-sections"
+
+# Build syscall wrapper for Kindle kernel compatibility
+# Kindle kernel 4.9.77 lacks preadv2/pwritev2 (added in 4.16)
+RUN printf '%s\n' \
+    '#define _GNU_SOURCE' \
+    '#include <sys/uio.h>' \
+    '#include <unistd.h>' \
+    '' \
+    'ssize_t preadv2(int fd, const struct iovec *iov, int iovcnt, off_t offset, int flags) {' \
+    '    return preadv(fd, iov, iovcnt, offset);' \
+    '}' \
+    '' \
+    'ssize_t pwritev2(int fd, const struct iovec *iov, int iovcnt, off_t offset, int flags) {' \
+    '    return pwritev(fd, iov, iovcnt, offset);' \
+    '}' \
+    > /build/syscall_wrapper.c && \
+    gcc -shared -fPIC -o /build/libsyscall_wrapper.so /build/syscall_wrapper.c && \
+    strip /build/libsyscall_wrapper.so
+
+# Build with Nuitka in standalone mode (creates directory with all deps)
+RUN python3 -m nuitka \
+    --mode=standalone \
+    --jobs=$(nproc) \
+    --lto=no \
+    --show-progress \
+    --output-dir=/build/nuitka-out \
+    --include-package=kindle_hid_passthrough \
+    --include-data-file=kindle_hid_passthrough/config.ini=kindle_hid_passthrough/config.ini \
+    --nofollow-import-to=pytest \
+    --nofollow-import-to=unittest \
+    --nofollow-import-to=setuptools \
+    kindle_hid_passthrough/main.py
+
+# Copy the build container's dynamic linker and core glibc libs into the dist.
+# Nuitka standalone doesn't include glibc core libs (assumes they exist on target).
+# But Kindle has glibc 2.20 which is incompatible, so we must bundle everything.
+RUN cp /lib/ld-linux-armhf.so.3 /build/nuitka-out/main.dist/ld-linux-armhf.so.3 && \
+    for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 \
+               libutil.so.1 libresolv.so.2 libnss_dns.so.2 libnss_files.so.2 \
+               libz.so.1 libstdc++.so.6; do \
+        src=$(find /lib /usr/lib -name "$lib" 2>/dev/null | head -1); \
+        if [ -n "$src" ]; then \
+            cp -L "$src" /build/nuitka-out/main.dist/"$lib"; \
+        fi; \
+    done && \
+    echo "Bundled libs:" && ls -la /build/nuitka-out/main.dist/lib*.so*
+
+# Build C wrapper that invokes the bundled ld-linux directly
+# This bypasses the system dynamic linker entirely
+RUN printf '%s\n' \
+    '#define _GNU_SOURCE' \
+    '#include <stdio.h>' \
+    '#include <stdlib.h>' \
+    '#include <string.h>' \
+    '#include <unistd.h>' \
+    '#include <libgen.h>' \
+    '#include <linux/limits.h>' \
+    '' \
+    'int main(int argc, char *argv[]) {' \
+    '    char exe_path[PATH_MAX];' \
+    '    char dir_path[PATH_MAX];' \
+    '    char dist_path[PATH_MAX];' \
+    '    char ld_path[PATH_MAX];' \
+    '    char bin_path[PATH_MAX];' \
+    '    char lib_path[PATH_MAX];' \
+    '    char preload_env[PATH_MAX];' \
+    '    ssize_t len;' \
+    '' \
+    '    len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);' \
+    '    if (len == -1) {' \
+    '        perror("readlink");' \
+    '        return 1;' \
+    '    }' \
+    '    exe_path[len] = '"'"'\0'"'"';' \
+    '' \
+    '    strncpy(dir_path, exe_path, sizeof(dir_path));' \
+    '    char *dir = dirname(dir_path);' \
+    '' \
+    '    snprintf(dist_path, sizeof(dist_path), "%s/dist", dir);' \
+    '    snprintf(ld_path, sizeof(ld_path), "%s/dist/ld-linux-armhf.so.3", dir);' \
+    '    snprintf(bin_path, sizeof(bin_path), "%s/dist/main.bin", dir);' \
+    '    snprintf(lib_path, sizeof(lib_path), "%s/libsyscall_wrapper.so", dir);' \
+    '' \
+    '    /* Set LD_PRELOAD for syscall compatibility shim */' \
+    '    snprintf(preload_env, sizeof(preload_env), "%s:%s/dist/libsyscall_wrapper.so", lib_path, dir);' \
+    '    setenv("LD_PRELOAD", lib_path, 1);' \
+    '    setenv("KINDLE_HID_BASE", dir, 1);' \
+    '' \
+    '    /* Build new argv: ld-linux --library-path dist dist/main.bin [original args] */' \
+    '    int new_argc = argc + 3; /* ld-linux, --library-path, dist, bin, then original args minus argv[0] */' \
+    '    char **new_argv = malloc(sizeof(char *) * (new_argc + 1));' \
+    '    if (!new_argv) {' \
+    '        perror("malloc");' \
+    '        return 1;' \
+    '    }' \
+    '' \
+    '    new_argv[0] = ld_path;' \
+    '    new_argv[1] = "--library-path";' \
+    '    new_argv[2] = dist_path;' \
+    '    new_argv[3] = bin_path;' \
+    '    for (int i = 1; i < argc; i++) {' \
+    '        new_argv[i + 3] = argv[i];' \
+    '    }' \
+    '    new_argv[argc + 3] = NULL;' \
+    '' \
+    '    execv(ld_path, new_argv);' \
+    '' \
+    '    perror("execv ld-linux");' \
+    '    return 1;' \
+    '}' \
+    > /build/wrapper.c && \
+    gcc -static -o /build/kindle-hid-passthrough /build/wrapper.c && \
+    strip /build/kindle-hid-passthrough
+
+# Prepare the output directory structure:
+#   kindle-hid-passthrough          - C wrapper (static, entry point)
+#   libsyscall_wrapper.so           - Syscall compatibility shim
+#   dist/                           - Nuitka standalone output
+#     main.bin                      - Python binary
+#     ld-linux-armhf.so.3           - Bundled dynamic linker
+#     *.so                          - All shared library dependencies

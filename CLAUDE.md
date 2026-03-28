@@ -1,6 +1,6 @@
-# Kindle BLE HID Project
+# Kindle HID Passthrough
 
-BLE HID device support for Amazon Kindle e-readers using Google Bumble.
+Userspace Bluetooth HID host for Kindle with UHID passthrough.
 
 ## SSH Configuration
 
@@ -11,8 +11,8 @@ The Kindle is accessed via SSH using the host alias `kindle`.
 Use `just` commands for all deployment and management:
 
 ```bash
-just deploy       # Deploy files to Kindle and restart daemon
-just deploy-watch # Deploy and follow logs
+just deploy       # Deploy files to Kindle
+just restart      # Restart daemon
 just ssh          # SSH into Kindle
 ```
 
@@ -36,19 +36,32 @@ just logs-recent  # Show last 50 lines
 
 ```bash
 just check        # Check Python syntax
-just test         # Run unit tests
 ```
 
 ## Cache Management
 
 ```bash
-just clear-cache  # Clear GATT cache (forces rediscovery)
+just clear-cache  # Clear descriptor cache
 just show-cache   # Show cached device data
 ```
 
 ## File Locations on Kindle
 
-- Code: `/mnt/us/bumble_ble_hid/`
-- Init script: `/etc/init.d/ble-hid`
-- Logs: `/var/log/ble_hid_daemon.log`
-- Device config: `/mnt/us/bumble_ble_hid/devices.conf`
+- Code: `/mnt/us/kindle_hid_passthrough/`
+- Upstart config: `/etc/upstart/hid-passthrough.conf`
+- Logs: `/var/log/hid_passthrough.log`
+- Device config: `/mnt/us/kindle_hid_passthrough/devices.conf`
+- Pairing keys: `/mnt/us/kindle_hid_passthrough/cache/pairing_keys.json`
+
+## Autostart (Upstart)
+
+The Kindle uses Upstart for service management. Two upstart configs are available:
+
+- `hid-passthrough.upstart` - For binary releases (runs compiled binary)
+- `hid-passthrough-dev.upstart` - For development (runs Python script)
+
+The `just deploy` command installs the dev version. Binary releases include the production version.
+
+```bash
+just remove-autostart  # Disable autostart (removes upstart config)
+```

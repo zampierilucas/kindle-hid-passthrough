@@ -1,0 +1,3 @@
+KERNEL=="uhid", MODE="0660", GROUP="bluetooth"
+
+ACTION=="add", SUBSYSTEM=="input", KERNEL=="event*", IMPORT{program}="/usr/local/bin/dev_is_keyboard.sh %S%p"

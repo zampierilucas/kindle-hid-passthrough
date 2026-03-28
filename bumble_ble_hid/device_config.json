@@ -1,9 +1,0 @@
-{
-    "name": "Kindle-BLE-HID",
-    "address": "F0:F0:F0:F0:F0:F0",
-    "class_of_device": 0,
-    "keystore": "JsonKeyStore",
-    "irk": "00000000000000000000000000000000",
-    "le_enabled": true,
-    "classic_enabled": false
-}
