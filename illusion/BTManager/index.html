@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>HID Passthrough</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+    <div class="header">
+        <h1>BT Manager</h1>
+        <button id="btnBack" class="btn-close">&#x2715;</button>
+    </div>
+
+    <div id="messageBar" class="message-bar"></div>
+
+    <div class="status-panel">
+        <div class="status-row">
+            <span class="status-label">Daemon: </span>
+            <span id="statusDaemon" class="status-value unknown">checking...</span>
+        </div>
+        <div class="status-row">
+            <span class="status-label">Devices: </span>
+            <span id="statusDevices" class="status-value unknown">--</span>
+        </div>
+    </div>
+
+    <div class="btn-row">
+        <button id="btnStart" class="btn btn-half btn-start">Start Daemon</button>
+        <button id="btnStop" class="btn btn-half btn-stop">Stop Daemon</button>
+    </div>
+
+    <div class="section-header">Paired Devices</div>
+
+    <div id="deviceList" class="device-list device-list-scroll">
+        <div class="loading">Loading devices...</div>
+    </div>
+
+    <div class="btn-row">
+        <button id="btnScan" class="btn btn-half btn-start">Scan</button>
+        <button id="btnLogs" class="btn btn-half btn-stop">Debug</button>
+    </div>
+
+    <div class="scan-section">
+        <div id="scanStatus" class="scan-status" style="display:none;"></div>
+        <div id="scanResults" class="device-list"></div>
+    </div>
+
+    <div id="footer" class="footer">
+        HID Passthrough
+    </div>
+
+    <!-- Overlays (hidden by default) -->
+
+    <div id="pairOverlay" class="pair-overlay">
+        <div class="log-header">
+            <span class="log-title">Pairing</span>
+            <button id="btnPairClose" class="btn-close">&#x2715;</button>
+        </div>
+        <div class="pair-dialog">
+            <p id="pairMessage">Pairing...</p>
+            <p id="pairAddr" class="pair-addr"></p>
+        </div>
+        <div class="pair-log-viewer">
+            <pre id="pairLogContent" class="log-content"></pre>
+        </div>
+    </div>
+
+    <div id="logOverlay" class="log-overlay">
+        <div class="log-header">
+            <span class="log-title">Debug</span>
+            <button id="btnLogClose" class="btn-close">&#x2715;</button>
+        </div>
+        <div class="keyboard-test-section">
+            <div id="keyboardTest" class="keyboard-test" contenteditable="true">Type here to test keyboard...</div>
+        </div>
+        <div id="logViewer" class="log-viewer">
+            <pre id="logContent" class="log-content"></pre>
+        </div>
+        <div class="log-controls">
+            <button id="btnLogUp" class="btn btn-half btn-start">&#x25B2; Up</button>
+            <button id="btnLogDown" class="btn btn-half btn-stop">&#x25BC; Down</button>
+        </div>
+        <div class="utility-section">
+            <button id="btnClearCache" class="btn btn-danger">Clear HID Cache</button>
+        </div>
+    </div>
+
+    <div id="confirmOverlay" class="overlay">
+        <div class="dialog">
+            <p id="dialogMessage">Are you sure?</p>
+            <div class="dialog-buttons">
+                <button class="btn" id="dialogCancelBtn">Cancel</button>
+                <button class="btn" id="dialogConfirmBtn">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

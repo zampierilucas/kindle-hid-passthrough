@@ -1,0 +1,598 @@
+/* BTManager - E-ink optimized stylesheet */
+/* WebKit 533 compatible: no flexbox, no grid, no CSS variables, no vh/vw */
+/* Kindle PW 1072x1448 @ 300PPI - sizes doubled for readability */
+
+* {
+    margin: 0;
+    padding: 0;
+    -webkit-box-sizing: border-box;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: sans-serif;
+    font-size: 40px;
+    line-height: 1.4;
+    color: #000;
+    background: #fff;
+    padding: 8px 20px 10px 20px;
+    -webkit-text-size-adjust: 100%;
+    overflow: hidden;
+    height: 100%;
+}
+
+html {
+    overflow: hidden;
+    height: 100%;
+}
+
+/* Header */
+.header {
+    position: relative;
+    text-align: center;
+    padding: 4px 0 10px 0;
+    border-bottom: 3px solid #000;
+    margin-bottom: 8px;
+}
+
+.btn-close {
+    position: absolute;
+    right: 0;
+    top: 6px;
+    min-width: 70px;
+    min-height: 70px;
+    padding: 10px 18px;
+    font-size: 44px;
+    font-weight: bold;
+    font-family: sans-serif;
+    border: 3px solid #000;
+    background: #fff;
+    color: #000;
+    cursor: pointer;
+    -webkit-appearance: none;
+    -webkit-border-radius: 6px;
+    border-radius: 6px;
+    line-height: 1;
+}
+
+.btn-close:active,
+.btn-close.btn-active {
+    background: #000;
+    color: #fff;
+}
+
+.header h1 {
+    font-size: 52px;
+    font-weight: bold;
+    margin: 0 0 4px 0;
+}
+
+.header .subtitle {
+    font-size: 32px;
+    color: #000;
+}
+
+/* Status panel */
+.status-panel {
+    border: 3px solid #000;
+    padding: 10px 20px;
+    margin-bottom: 8px;
+    background: #f0f0f0;
+}
+
+.status-row {
+    padding: 6px 0;
+    font-size: 36px;
+    overflow: hidden;
+}
+
+.status-label {
+    font-weight: bold;
+    display: inline;
+}
+
+.status-value {
+    display: inline;
+}
+
+.status-value.running {
+    font-weight: bold;
+}
+
+.status-value.stopped {
+    color: #000;
+}
+
+.status-value.unknown {
+    color: #000;
+    font-style: italic;
+}
+
+/* Buttons */
+.btn {
+    display: block;
+    width: 100%;
+    min-height: 76px;
+    padding: 16px 28px;
+    font-size: 38px;
+    font-weight: bold;
+    font-family: sans-serif;
+    border: 3px solid #000;
+    background: #fff;
+    color: #000;
+    cursor: pointer;
+    text-align: center;
+    margin-bottom: 12px;
+    -webkit-appearance: none;
+    -webkit-border-radius: 6px;
+    border-radius: 6px;
+}
+
+.btn:active,
+.btn.btn-active {
+    background: #000;
+    color: #fff;
+}
+
+.btn-start {
+    background: #e0e0e0;
+}
+
+.btn-stop {
+    background: #d0d0d0;
+}
+
+.btn-danger {
+    border-style: dashed;
+}
+
+.btn-small {
+    font-size: 36px;
+    min-height: 76px;
+    padding: 16px 20px;
+    width: auto;
+    display: inline-block;
+}
+
+/* Button row - side by side buttons */
+.btn-row {
+    overflow: hidden;
+    margin-bottom: 8px;
+}
+
+.btn-row .btn-half {
+    float: left;
+    width: 48%;
+    margin-bottom: 0;
+}
+
+.btn-row .btn-half + .btn-half {
+    float: right;
+}
+
+/* Section headers */
+.section-header {
+    font-size: 40px;
+    font-weight: bold;
+    padding: 8px 0 6px 0;
+    border-bottom: 2px solid #000;
+    margin-bottom: 8px;
+}
+
+/* Device list */
+.device-list {
+    margin-bottom: 8px;
+}
+
+.device-list-scroll {
+    max-height: 600px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.device-item {
+    border: 2px solid #000;
+    padding: 16px 20px;
+    margin-bottom: 10px;
+    overflow: hidden;
+    -webkit-border-radius: 4px;
+    border-radius: 4px;
+}
+
+.device-connected {
+    background: #d0d0d0;
+    border-width: 4px;
+}
+
+.device-status-tag {
+    font-size: 28px;
+    font-weight: normal;
+    font-style: italic;
+}
+
+.device-info {
+    overflow: hidden;
+}
+
+.device-name {
+    font-weight: bold;
+    font-size: 40px;
+    margin-bottom: 4px;
+}
+
+.device-addr {
+    font-size: 32px;
+    font-family: monospace;
+    color: #000;
+}
+
+.device-proto {
+    font-size: 28px;
+    color: #000;
+    display: inline;
+    margin-left: 12px;
+}
+
+.device-remove,
+.device-disconnect,
+.device-connect {
+    float: right;
+    min-width: 140px;
+    min-height: 76px;
+    padding: 14px 24px;
+    font-size: 32px;
+    font-weight: bold;
+    font-family: sans-serif;
+    border: 3px solid #000;
+    background: #fff;
+    color: #000;
+    cursor: pointer;
+    text-align: center;
+    margin-top: 4px;
+    -webkit-appearance: none;
+    -webkit-border-radius: 4px;
+    border-radius: 4px;
+}
+
+.device-disconnect,
+.device-connect {
+    background: #e0e0e0;
+}
+
+.device-remove + .device-disconnect,
+.device-remove + .device-connect {
+    margin-right: 12px;
+}
+
+.device-remove:active,
+.device-remove.btn-active,
+.device-disconnect:active,
+.device-connect:active {
+    background: #000;
+    color: #fff;
+}
+
+.device-empty {
+    font-size: 36px;
+    color: #000;
+    font-style: italic;
+    padding: 20px 0;
+    text-align: center;
+}
+
+/* Info box */
+.info-box {
+    border: 2px solid #000;
+    background: #f8f8f8;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+    font-size: 32px;
+    line-height: 1.5;
+}
+
+.info-box .info-title {
+    font-weight: bold;
+    font-size: 36px;
+    margin-bottom: 6px;
+}
+
+.info-box code {
+    font-family: monospace;
+    font-size: 28px;
+    background: #e8e8e8;
+    padding: 2px 6px;
+}
+
+/* Keyboard test input inside debug overlay */
+.keyboard-test-section {
+    padding: 8px 12px;
+    border-bottom: 2px solid #666;
+}
+
+.keyboard-test {
+    width: 100%;
+    min-height: 60px;
+    font-size: 32px;
+    padding: 12px;
+    border: 3px solid #000;
+    background: #fff;
+    color: #333;
+    -webkit-box-sizing: border-box;
+    box-sizing: border-box;
+}
+
+/* Utility buttons section */
+.utility-section {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 2px solid #000;
+}
+
+/* Message / toast - floats at bottom, no layout shift */
+.message-bar {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    padding: 16px 20px;
+    border-top: 3px solid #000;
+    font-size: 36px;
+    font-weight: bold;
+    text-align: center;
+    background: #e0e0e0;
+    z-index: 200;
+}
+
+.message-bar.visible {
+    display: block;
+}
+
+.message-bar.error {
+    background: #fff;
+    border-top-style: dashed;
+}
+
+/* Confirm dialog overlay */
+.overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.92);
+    z-index: 100;
+}
+
+.overlay.visible {
+    display: block;
+}
+
+.dialog {
+    position: absolute;
+    top: 30%;
+    left: 10%;
+    width: 80%;
+    border: 4px solid #000;
+    background: #fff;
+    padding: 32px;
+    text-align: center;
+}
+
+.dialog p {
+    font-size: 40px;
+    margin-bottom: 24px;
+    line-height: 1.4;
+}
+
+.dialog .dialog-addr {
+    font-family: monospace;
+    font-weight: bold;
+    font-size: 36px;
+}
+
+.dialog-buttons {
+    overflow: hidden;
+}
+
+.dialog-buttons .btn {
+    float: left;
+    width: 46%;
+    margin: 0 2%;
+}
+
+/* Loading indicator */
+.loading {
+    text-align: center;
+    font-size: 36px;
+    color: #000;
+    padding: 32px 0;
+}
+
+/* Scan section */
+.scan-section {
+    margin-bottom: 16px;
+}
+
+.scan-status {
+    text-align: center;
+    font-size: 36px;
+    font-style: italic;
+    padding: 16px 0;
+}
+
+.scan-device-item {
+    border: 2px solid #000;
+    padding: 16px 20px;
+    margin-bottom: 10px;
+    overflow: hidden;
+    -webkit-border-radius: 4px;
+    border-radius: 4px;
+}
+
+.scan-device-info {
+    overflow: hidden;
+}
+
+.scan-device-name {
+    font-weight: bold;
+    font-size: 40px;
+    margin-bottom: 4px;
+}
+
+.scan-device-meta {
+    font-size: 32px;
+    font-family: monospace;
+    color: #000;
+}
+
+.scan-device-rssi {
+    font-size: 28px;
+    display: inline;
+    margin-left: 12px;
+}
+
+.btn-pair {
+    float: right;
+    min-width: 140px;
+    min-height: 76px;
+    padding: 14px 24px;
+    font-size: 32px;
+    font-weight: bold;
+    font-family: sans-serif;
+    border: 3px solid #000;
+    background: #e0e0e0;
+    color: #000;
+    cursor: pointer;
+    text-align: center;
+    margin-top: 4px;
+    -webkit-appearance: none;
+    -webkit-border-radius: 4px;
+    border-radius: 4px;
+}
+
+.btn-pair:active,
+.btn-pair.btn-active {
+    background: #000;
+    color: #fff;
+}
+
+/* Pair overlay */
+.pair-overlay {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    min-height: 100%;
+    background: #fff;
+    z-index: 100;
+    padding: 8px 20px 20px 20px;
+}
+
+.pair-overlay.visible {
+    display: block;
+}
+
+.pair-dialog {
+    border: 4px solid #000;
+    background: #fff;
+    padding: 32px;
+    text-align: center;
+    margin-bottom: 16px;
+}
+
+.pair-dialog p {
+    font-size: 40px;
+    margin-bottom: 16px;
+    line-height: 1.4;
+}
+
+.pair-dialog .pair-addr {
+    font-family: monospace;
+    font-weight: bold;
+    font-size: 36px;
+}
+
+.pair-log-viewer {
+    border: 2px solid #000;
+    overflow: hidden;
+    height: 900px;
+}
+
+/* Log viewer - fullscreen overlay */
+.logs-section {
+    margin-bottom: 16px;
+}
+
+.log-overlay {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: #fff;
+    z-index: 90;
+    padding: 8px 20px 20px 20px;
+    overflow: hidden;
+}
+
+.log-overlay.visible {
+    display: block;
+}
+
+.log-header {
+    position: relative;
+    text-align: center;
+    padding: 8px 0 14px 0;
+    border-bottom: 3px solid #000;
+    margin-bottom: 12px;
+}
+
+.log-title {
+    font-size: 48px;
+    font-weight: bold;
+}
+
+.log-viewer {
+    border: 2px solid #000;
+    overflow: hidden;
+    height: 900px;
+}
+
+.log-content {
+    font-family: monospace;
+    font-size: 22px;
+    line-height: 1.3;
+    padding: 12px;
+    margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.log-controls {
+    overflow: hidden;
+    margin-top: 12px;
+}
+
+.log-controls .btn-half {
+    float: left;
+    width: 48%;
+    margin-bottom: 0;
+}
+
+.log-controls .btn-half + .btn-half {
+    float: right;
+}
+
+/* Footer */
+.footer {
+    text-align: center;
+    font-size: 28px;
+    color: #000;
+    padding: 12px 0 8px 0;
+    border-top: 2px solid #000;
+    margin-top: 16px;
+}
