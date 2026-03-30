@@ -54,20 +54,15 @@ if [ -f "$APPREG_DB" ]; then
     existing=$(sqlite3 "$APPREG_DB" "SELECT handlerId FROM handlerIds WHERE handlerId='$APP_ID';" 2>/dev/null)
     if [ -z "$existing" ]; then
         sqlite3 "$APPREG_DB" <<EOF
+INSERT OR IGNORE INTO interfaces (interface) VALUES ('application');
 INSERT OR IGNORE INTO handlerIds (handlerId) VALUES ('$APP_ID');
 INSERT OR IGNORE INTO associations (handlerId, interface, contentId, defaultAssoc)
     VALUES ('$APP_ID', 'application', 'GL:$APP_ID', 0);
-INSERT OR IGNORE INTO properties (handlerId, name, value)
+INSERT OR REPLACE INTO properties (handlerId, name, value)
     VALUES ('$APP_ID', 'lipcId', '$APP_ID');
-INSERT OR IGNORE INTO properties (handlerId, name, value)
-    VALUES ('$APP_ID', 'appId', '$APP_ID');
-INSERT OR IGNORE INTO properties (handlerId, name, value)
+INSERT OR REPLACE INTO properties (handlerId, name, value)
     VALUES ('$APP_ID', 'command', '/usr/bin/mesquite -l $APP_ID -c file://$APP_DIR/');
-INSERT OR IGNORE INTO properties (handlerId, name, value)
-    VALUES ('$APP_ID', 'unloadPolicy', 'unloadOnPause');
-INSERT OR IGNORE INTO properties (handlerId, name, value)
-    VALUES ('$APP_ID', 'extend-start', 'Y');
-INSERT OR IGNORE INTO properties (handlerId, name, value)
+INSERT OR REPLACE INTO properties (handlerId, name, value)
     VALUES ('$APP_ID', 'supportedOrientation', 'U');
 EOF
         echo "   Registered $APP_ID in appreg.db"
