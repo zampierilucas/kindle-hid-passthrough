@@ -53,6 +53,25 @@ just show-cache   # Show cached device data
 - Device config: `/mnt/us/kindle_hid_passthrough/devices.conf`
 - Pairing keys: `/mnt/us/kindle_hid_passthrough/cache/pairing_keys.json`
 
+## Manual System File Installation
+
+### udev rules
+
+```bash
+cd /mnt/us/kindle_hid_passthrough
+mntroot rw
+cp scripts/dev_is_keyboard.sh /usr/local/bin/
+cp assets/99-hid-keyboard.rules /etc/udev/rules.d
+udevadm control --reload-rules
+mntroot ro
+```
+
+### BTManager WAF app (dev install)
+
+```bash
+sh /mnt/us/kindle_hid_passthrough/illusion/install-waf-app.sh
+```
+
 ## Autostart (Upstart)
 
 The Kindle uses Upstart for service management. Two upstart configs are available:

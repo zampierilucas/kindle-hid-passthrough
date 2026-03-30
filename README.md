@@ -145,6 +145,10 @@ Tested on:
 - **Kernel**: Linux 4.9.77-lab126
 - **Bluetooth**: MediaTek CONSYS via `/dev/stpbt`
 
+## Troubleshooting
+
+See [docs/troubleshooting.md](docs/troubleshooting.md) for manual commands, installation steps, and common issues.
+
 ## Development
 
 See [docs/development.md](docs/development.md) for development setup and commands.
