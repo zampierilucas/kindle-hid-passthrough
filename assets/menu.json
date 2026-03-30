@@ -7,12 +7,12 @@
 		{
 			"name": "Start HID passthrough Daemon",
 			"priority": 1,
-			"action": "/mnt/us/kindle_hid_passthrough/hid-passthrough-daemon.sh start"
+			"action": "/mnt/us/kindle_hid_passthrough/scripts/hid-passthrough-daemon.sh start"
 		},
 		{
 			"name": "Stop HID passthrough Daemon",
 			"priority": 2,
-			"action": "/mnt/us/kindle_hid_passthrough/hid-passthrough-daemon.sh stop"
+			"action": "/mnt/us/kindle_hid_passthrough/scripts/hid-passthrough-daemon.sh stop"
 		}
 		]
 	}

@@ -48,7 +48,7 @@ jobs:
 
       - name: Add scripts and assets
         run: |
-          cp install.sh hid-passthrough-daemon.sh setlayout.sh output/
+          cp -r scripts/ output/
           cp -r assets/ output/
           cp -r illusion/ output/
           cp kindle_hid_passthrough/config.ini output/

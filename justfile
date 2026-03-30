@@ -22,13 +22,13 @@ deploy:
         --transform='s|^kindle_hid_passthrough/hid-passthrough-dev.upstart|etc/upstart/hid-passthrough.conf|' \
         --transform='s|^kindle_hid_passthrough/|mnt/us/kindle_hid_passthrough/|' \
         --transform='s|^assets/99-hid-keyboard.rules|etc/udev/rules.d/99-hid-keyboard.rules|' \
-        --transform='s|^assets/dev_is_keyboard.sh|usr/local/bin/dev_is_keyboard.sh|' \
+        --transform='s|^scripts/dev_is_keyboard.sh|usr/local/bin/dev_is_keyboard.sh|' \
         --transform='s|^illusion/BTManager/|mnt/us/kindle_hid_passthrough/illusion/BTManager/|' \
         kindle_hid_passthrough/*.py \
         kindle_hid_passthrough/config.ini \
         kindle_hid_passthrough/hid-passthrough-dev.upstart \
         assets/99-hid-keyboard.rules \
-        assets/dev_is_keyboard.sh \
+        scripts/dev_is_keyboard.sh \
         illusion/BTManager/* \
     ) | ssh kindle "tar xf - -C /"
     ssh kindle "chmod +x /usr/local/bin/dev_is_keyboard.sh"

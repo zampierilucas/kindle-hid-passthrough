@@ -7,22 +7,22 @@
 		{
 			"name": "Start BT Keyboard Daemon",
 			"priority": 1,
-			"action": "/mnt/us/kindle_hid_passthrough/hid-passthrough-daemon.sh start"
+			"action": "/mnt/us/kindle_hid_passthrough/scripts/hid-passthrough-daemon.sh start"
 		},
 		{
 			"name": "Stop BT Keyboard Daemon",
 			"priority": 2,
-			"action": "/mnt/us/kindle_hid_passthrough/hid-passthrough-daemon.sh stop"
+			"action": "/mnt/us/kindle_hid_passthrough/scripts/hid-passthrough-daemon.sh stop"
 		},
 		{
 			"name": "Set custom keyboard layout",
 			"priority": 3,
-			"action": "/mnt/us/kindle_hid_passthrough/setlayout.sh CUSTOMLAYOUT"
+			"action": "/mnt/us/kindle_hid_passthrough/scripts/setlayout.sh CUSTOMLAYOUT"
 		},
 		{
 			"name": "Restore default keyboard layout",
 			"priority": 4,
-			"action": "/mnt/us/kindle_hid_passthrough/setlayout.sh --restore"
+			"action": "/mnt/us/kindle_hid_passthrough/scripts/setlayout.sh --restore"
 		}
 		]
 	}
