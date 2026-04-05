@@ -77,7 +77,7 @@ mntroot ro
 
 ```bash
 mntroot rw
-cp /mnt/us/kindle_hid_passthrough/assets/hid-passthrough.upstart /etc/upstart/hid-passthrough.conf
+cp /mnt/us/kindle_hid_passthrough/kindle_hid_passthrough/hid-passthrough.upstart /etc/upstart/hid-passthrough.conf
 mntroot ro
 ```
 
