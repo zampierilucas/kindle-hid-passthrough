@@ -65,7 +65,7 @@ RUN printf '%s\n' \
 RUN python3 -m nuitka \
     --mode=standalone \
     --jobs=$(nproc) \
-    --lto=no \
+    --lto=yes \
     --show-progress \
     --output-dir=/build/nuitka-out \
     --include-package=kindle_hid_passthrough \
