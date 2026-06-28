@@ -271,8 +271,12 @@ class BLEMixin:
                              f"{self._format_device(resolved_norm)}")
                     return (dev, 'irk')
 
-        name = advertisement.data.get(AdvertisingData.COMPLETE_LOCAL_NAME) or \
-            advertisement.data.get(AdvertisingData.SHORTENED_LOCAL_NAME)
+        try:
+            name = advertisement.data.get(AdvertisingData.COMPLETE_LOCAL_NAME) or \
+                advertisement.data.get(AdvertisingData.SHORTENED_LOCAL_NAME)
+        except UnicodeDecodeError as e:
+            log.debug(f"[BLE] Ignoring malformed advertisement from {addr_norm}: {e}")
+            return None
         if isinstance(name, bytes):
             name = name.decode('utf-8', errors='replace')
         if name:

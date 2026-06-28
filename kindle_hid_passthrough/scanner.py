@@ -147,28 +147,36 @@ class Scanner:
             if addr_str in seen_addresses:
                 return
 
-            # Check for HID service in advertising data
+            # Check for HID service in advertising data. Some nearby devices
+            # advertise malformed local names, and Bumble may decode them while
+            # iterating the advertising records.
             is_hid = False
             if hasattr(advertisement, 'data') and advertisement.data:
-                services = advertisement.data.get(
-                    AdvertisingData.COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS
-                ) or advertisement.data.get(
-                    AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS
-                )
-                if services:
-                    for service_uuid in services:
-                        if service_uuid == GATT_HUMAN_INTERFACE_DEVICE_SERVICE:
-                            is_hid = True
-                            break
+                try:
+                    services = advertisement.data.get(
+                        AdvertisingData.COMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS
+                    ) or advertisement.data.get(
+                        AdvertisingData.INCOMPLETE_LIST_OF_16_BIT_SERVICE_CLASS_UUIDS
+                    )
+                    if services:
+                        for service_uuid in services:
+                            if service_uuid == GATT_HUMAN_INTERFACE_DEVICE_SERVICE:
+                                is_hid = True
+                                break
 
-                if not is_hid:
-                    appearance = advertisement.data.get(AdvertisingData.APPEARANCE)
-                    appearance_category = int(appearance) >> 6 if appearance is not None else None
-                    if appearance_category in (
-                        BLE_APPEARANCE_CATEGORY_HID,
-                        BLE_APPEARANCE_CATEGORY_PHONE,
-                    ):
-                        is_hid = True
+                    if not is_hid:
+                        appearance = advertisement.data.get(AdvertisingData.APPEARANCE)
+                        appearance_category = (
+                            int(appearance) >> 6 if appearance is not None else None
+                        )
+                        if appearance_category in (
+                            BLE_APPEARANCE_CATEGORY_HID,
+                            BLE_APPEARANCE_CATEGORY_PHONE,
+                        ):
+                            is_hid = True
+                except UnicodeDecodeError as e:
+                    log.debug(f"Skipping malformed BLE advertisement from {addr_str}: {e}")
+                    return
 
             if not is_hid:
                 return
@@ -176,8 +184,12 @@ class Scanner:
 
             name = 'Unknown'
             if hasattr(advertisement, 'data') and advertisement.data:
-                name = advertisement.data.get(AdvertisingData.COMPLETE_LOCAL_NAME) or \
-                       advertisement.data.get(AdvertisingData.SHORTENED_LOCAL_NAME) or 'Unknown'
+                try:
+                    name = advertisement.data.get(AdvertisingData.COMPLETE_LOCAL_NAME) or \
+                           advertisement.data.get(AdvertisingData.SHORTENED_LOCAL_NAME) or 'Unknown'
+                except UnicodeDecodeError as e:
+                    log.debug(f"Using Unknown name for malformed BLE advertisement from {addr_str}: {e}")
+                    name = 'Unknown'
                 if isinstance(name, bytes):
                     name = name.decode('utf-8', errors='replace')
 
