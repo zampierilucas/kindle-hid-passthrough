@@ -147,9 +147,6 @@ class Scanner:
             if addr_str in seen_addresses:
                 return
 
-            # Check for HID service in advertising data. Some nearby devices
-            # advertise malformed local names, and Bumble may decode them while
-            # iterating the advertising records.
             is_hid = False
             if hasattr(advertisement, 'data') and advertisement.data:
                 try:
