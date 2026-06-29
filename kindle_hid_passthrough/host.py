@@ -398,8 +398,12 @@ class HIDHost(ClassicMixin, BLEMixin):
         live_sessions = any(
             self._is_session_alive(s) for s in self.sessions.values()
         )
-        if self._disconnection_event and not live_sessions:
-            self._disconnection_event.set()
+        if self._disconnection_event:
+            if session and self._has_configured_devices(protocol):
+                log.info(f"[{proto}] Restarting host to restore configured device")
+                self._disconnection_event.set()
+            elif not live_sessions:
+                self._disconnection_event.set()
         if protocol == self.connected_protocol and protocol not in self.sessions:
             self.connection = None
             self.peer = None
@@ -523,6 +527,14 @@ class HIDHost(ClassicMixin, BLEMixin):
         if protocol == Protocol.CLASSIC:
             return max(0.0, self._classic_retry_not_before - time.monotonic())
         return 0.0
+
+    def _has_configured_devices(self, protocol: Protocol) -> bool:
+        """Check if a protocol should be restored after a live session drops."""
+        if protocol == Protocol.CLASSIC:
+            return bool(self.classic_devices)
+        if protocol == Protocol.BLE:
+            return bool(self.ble_devices)
+        return False
 
     def _is_raw_connection_alive(self, connection) -> bool:
         """Check if a Bumble connection object is still alive."""
