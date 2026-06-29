@@ -399,7 +399,19 @@ class HIDHost(ClassicMixin, BLEMixin):
             self._is_session_alive(s) for s in self.sessions.values()
         )
         if self._disconnection_event:
-            if session and self._has_configured_devices(protocol):
+            if (
+                session
+                and protocol == Protocol.CLASSIC
+                and self.ble_devices
+                and not self._is_protocol_connected(Protocol.BLE)
+            ):
+                retry_delay = self.CLASSIC_AUTH_RETRY_DELAY_WITH_PENDING_BLE
+                self._classic_retry_not_before = time.monotonic() + retry_delay
+                log.info(
+                    "[Classic] Waiting for BLE before restarting Classic "
+                    f"after {retry_delay:.0f}s"
+                )
+            elif session and self._has_configured_devices(protocol):
                 log.info(f"[{proto}] Restarting host to restore configured device")
                 self._disconnection_event.set()
             elif not live_sessions:
