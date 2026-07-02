@@ -44,6 +44,7 @@ class DeviceSession:
     uhid_device: Optional[UHIDDevice] = None
     disconnection_event: Optional[asyncio.Event] = None
     last_report: Optional[bytes] = None
+    keyboard_last_keys: tuple = field(default_factory=tuple)
 
 
 class HIDHost(ClassicMixin, BLEMixin):
@@ -438,6 +439,10 @@ class HIDHost(ClassicMixin, BLEMixin):
 
     def _forward_report_for_session(self, session: DeviceSession, data: bytes):
         """Log changed HID reports and forward every report for one session."""
+        for report in self._reports_for_session(session, data):
+            self._send_report_for_session(session, report)
+
+    def _send_report_for_session(self, session: DeviceSession, data: bytes):
         if data != session.last_report:
             log.debug(f"Report: {data.hex()}")
             session.last_report = data
@@ -446,6 +451,44 @@ class HIDHost(ClassicMixin, BLEMixin):
                 session.uhid_device.send_input(data)
             except Exception as e:
                 log.warning(f"UHID send failed: {e}")
+
+    def _reports_for_session(self, session: DeviceSession, data: bytes):
+        if (
+            session.protocol != Protocol.CLASSIC
+            or not config.classic_serialize_keyboard_reports
+        ):
+            return (data,)
+
+        parsed = self._parse_classic_keyboard_report(data)
+        if not parsed:
+            session.keyboard_last_keys = ()
+            return (data,)
+
+        modifier, keys = parsed
+        previous = set(session.keyboard_last_keys)
+        current = tuple(key for key in keys if key)
+        session.keyboard_last_keys = current
+
+        release = self._make_classic_keyboard_report(0, ())
+        if not current:
+            return (release,)
+
+        new_keys = [key for key in current if key not in previous]
+        reports = []
+        for key in new_keys:
+            reports.append(self._make_classic_keyboard_report(modifier, (key,)))
+            reports.append(release)
+        return tuple(reports)
+
+    def _parse_classic_keyboard_report(self, data: bytes):
+        if len(data) != 8 or data[0] != 1:
+            return None
+        return data[1], tuple(data[3:8])
+
+    def _make_classic_keyboard_report(self, modifier: int, keys):
+        slots = list(keys[:5])
+        slots.extend([0] * (5 - len(slots)))
+        return bytes([1, modifier, 0, *slots])
 
     def _load_cached_descriptor(
         self,

@@ -352,8 +352,8 @@ class ClassicMixin:
             else:
                 self.report_map = None
             live = await self._query_classic_sdp(session=session)
-            if live is None and self._load_cached_descriptor(session=session):
-                log.warning("[Classic] SDP query failed; using cached descriptor")
+            if not live and self._load_cached_descriptor(session=session):
+                log.warning("[Classic] Live SDP descriptor unavailable; using cached descriptor")
             elif not live:
                 log.warning(
                     "[Classic] No live HID descriptor; dropping link without "

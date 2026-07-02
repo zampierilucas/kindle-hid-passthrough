@@ -119,6 +119,8 @@ class Config:
         self.bt_settle_time = float(self._get('bluetooth', 'settle_time', '0.5'))
         self.classic_require_live_descriptor = self._getbool(
             'classic', 'require_live_descriptor', True)
+        self.classic_serialize_keyboard_reports = self._getbool(
+            'classic', 'serialize_keyboard_reports', False)
 
         # Kindle power lifecycle. The WMT chip is shared by BT and Wi-Fi, so
         # the daemon must stay off the HCI device around suspend/resume.

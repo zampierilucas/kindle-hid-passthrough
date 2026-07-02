@@ -567,7 +567,8 @@ class BLEMixin:
 
     def _on_ble_hid_report(self, value, report_id, session=None):
         """Handle BLE HID report."""
-        data = bytes([report_id]) + bytes(value)
+        payload = bytes(value)
+        data = bytes([report_id]) + payload if report_id else payload
         if session:
             self._forward_report_for_session(session, data)
         else:

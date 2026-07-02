@@ -224,6 +224,18 @@ class DummyFuture:
         self.result = result
 
 
+class FakeUhidDevice:
+    def __init__(self):
+        self.inputs = []
+
+    def send_input(self, data):
+        self.inputs.append(data)
+
+
+class FakeHidHost:
+    l2cap_intr_channel = object()
+
+
 class HostDisconnectionTests(unittest.TestCase):
     def make_host(self):
         cache_dir = tempfile.mkdtemp(prefix="hid-host-test-")
@@ -292,6 +304,152 @@ class HostDisconnectionTests(unittest.TestCase):
         self.assertTrue(session.disconnection_event.is_set())
         self.assertNotIn(Protocol.BLE, host._pending_sessions)
         self.assertFalse(host._disconnection_event.is_set())
+
+
+class ClassicDescriptorFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_classic_uses_cached_descriptor_when_live_sdp_has_no_descriptor(self):
+        old_require = config.classic_require_live_descriptor
+        config.classic_require_live_descriptor = True
+        try:
+            cache_dir = tempfile.mkdtemp(prefix="hid-host-test-")
+            config.cache_dir = cache_dir
+            config.pairing_keys_file = os.path.join(cache_dir, "pairing_keys.json")
+            host = HIDHost()
+            session = host._new_session(
+                Protocol.CLASSIC,
+                "AA:BB:CC:DD:EE:FF",
+                FakeConnection(),
+                hid_host=FakeHidHost(),
+            )
+
+            async def query_sdp(*_args, **_kwargs):
+                return False
+
+            def load_cached(*_args, **_kwargs):
+                session.report_map = b"\x05\x01"
+                return True
+
+            def finalize(classic_session=None):
+                classic_session.uhid_device = FakeUhidDevice()
+
+            host._query_classic_sdp = query_sdp
+            host._load_cached_descriptor = load_cached
+            host._finalize_classic_hid = finalize
+
+            connected = await host._handle_classic_connection(session)
+
+            self.assertTrue(connected)
+            self.assertFalse(session.connection.is_disconnected)
+            self.assertEqual(b"\x05\x01", session.report_map)
+        finally:
+            config.classic_require_live_descriptor = old_require
+
+
+class BleReportForwardingTests(unittest.TestCase):
+    def make_host(self):
+        cache_dir = tempfile.mkdtemp(prefix="hid-host-test-")
+        config.cache_dir = cache_dir
+        config.pairing_keys_file = os.path.join(cache_dir, "pairing_keys.json")
+        return HIDHost()
+
+    def test_ble_report_id_zero_forwards_payload_without_synthetic_prefix(self):
+        host = self.make_host()
+        session = host._new_session(
+            Protocol.BLE,
+            "AA:BB:CC:DD:EE:FF",
+            FakeConnection(),
+        )
+        session.uhid_device = FakeUhidDevice()
+
+        host._on_ble_hid_report(b"\x00\x00\x04\x00\x00\x00\x00\x00", 0, session)
+
+        self.assertEqual(
+            [b"\x00\x00\x04\x00\x00\x00\x00\x00"],
+            session.uhid_device.inputs,
+        )
+
+    def test_ble_numbered_report_preserves_report_id_prefix(self):
+        host = self.make_host()
+        session = host._new_session(
+            Protocol.BLE,
+            "AA:BB:CC:DD:EE:FF",
+            FakeConnection(),
+        )
+        session.uhid_device = FakeUhidDevice()
+
+        host._on_ble_hid_report(b"\x00\x00\x04\x00\x00\x00\x00\x00", 3, session)
+
+        self.assertEqual(
+            [b"\x03\x00\x00\x04\x00\x00\x00\x00\x00"],
+            session.uhid_device.inputs,
+        )
+
+
+class KeyboardReportSerializationTests(unittest.TestCase):
+    def setUp(self):
+        self._old_serialize = config.classic_serialize_keyboard_reports
+        config.classic_serialize_keyboard_reports = True
+
+    def tearDown(self):
+        config.classic_serialize_keyboard_reports = self._old_serialize
+
+    def make_host_and_session(self):
+        cache_dir = tempfile.mkdtemp(prefix="hid-host-test-")
+        config.cache_dir = cache_dir
+        config.pairing_keys_file = os.path.join(cache_dir, "pairing_keys.json")
+        host = HIDHost()
+        session = host._new_session(
+            Protocol.CLASSIC,
+            "AA:BB:CC:DD:EE:FF",
+            FakeConnection(),
+        )
+        session.uhid_device = FakeUhidDevice()
+        return host, session
+
+    def test_classic_keyboard_overlap_is_serialized_into_key_taps(self):
+        host, session = self.make_host_and_session()
+
+        host._forward_report_for_session(
+            session,
+            b"\x01\x00\x00\x04\x00\x00\x00\x00",
+        )
+        host._forward_report_for_session(
+            session,
+            b"\x01\x00\x00\x04\x05\x00\x00\x00",
+        )
+
+        self.assertEqual(
+            [
+                b"\x01\x00\x00\x04\x00\x00\x00\x00",
+                b"\x01\x00\x00\x00\x00\x00\x00\x00",
+                b"\x01\x00\x00\x05\x00\x00\x00\x00",
+                b"\x01\x00\x00\x00\x00\x00\x00\x00",
+            ],
+            session.uhid_device.inputs,
+        )
+
+    def test_classic_keyboard_serializer_preserves_modifier_for_tap(self):
+        host, session = self.make_host_and_session()
+
+        host._forward_report_for_session(
+            session,
+            b"\x01\x02\x00\x04\x00\x00\x00\x00",
+        )
+
+        self.assertEqual(
+            [
+                b"\x01\x02\x00\x04\x00\x00\x00\x00",
+                b"\x01\x00\x00\x00\x00\x00\x00\x00",
+            ],
+            session.uhid_device.inputs,
+        )
+
+    def test_classic_non_keyboard_report_is_forwarded_unchanged(self):
+        host, session = self.make_host_and_session()
+
+        host._forward_report_for_session(session, b"\x03\x01\x02")
+
+        self.assertEqual([b"\x03\x01\x02"], session.uhid_device.inputs)
 
 
 class DaemonPowerLifecycleTests(unittest.IsolatedAsyncioTestCase):
