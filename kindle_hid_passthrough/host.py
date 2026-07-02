@@ -3,7 +3,8 @@
 
 import asyncio
 import time
-from dataclasses import dataclass
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from bumble.core import InvalidStateError
@@ -39,6 +40,7 @@ class DeviceSession:
     hid_host: object = None
     device_name: Optional[str] = None
     report_map: Optional[bytes] = None
+    hid_reports: list = field(default_factory=list)
     uhid_device: Optional[UHIDDevice] = None
     disconnection_event: Optional[asyncio.Event] = None
     last_report: Optional[bytes] = None
@@ -86,9 +88,9 @@ class HIDHost(ClassicMixin, BLEMixin):
 
         self.uhid_device = None
         self.sessions: dict[Protocol, DeviceSession] = {}
+        self._pending_sessions: dict[Protocol, DeviceSession] = {}
 
         self._disconnection_event = None
-        self._protocol_disconnection_events: dict[Protocol, asyncio.Event] = {}
         self._connection_future = None
         self._session_setup_lock = None
         self._allow_legacy_connection_state = False
@@ -264,10 +266,6 @@ class HIDHost(ClassicMixin, BLEMixin):
     async def run(self):
         """Main run loop - handle both protocols concurrently."""
         self._disconnection_event = asyncio.Event()
-        self._protocol_disconnection_events = {
-            Protocol.CLASSIC: asyncio.Event(),
-            Protocol.BLE: asyncio.Event(),
-        }
         self._connection_future = asyncio.get_event_loop().create_future()
         self._session_setup_lock = asyncio.Lock()
         self._allow_legacy_connection_state = False
@@ -368,17 +366,20 @@ class HIDHost(ClassicMixin, BLEMixin):
     # ==================== COMMON ====================
 
     def _on_disconnection(self, reason):
-        """Handle device disconnection."""
-        self._on_protocol_disconnection(
-            self.connected_protocol, self.current_device_address, reason)
-
-    def _on_protocol_disconnection(self, protocol, address, reason):
-        """Handle disconnection for a specific protocol session."""
-        proto = protocol.value.upper() if protocol else "Unknown"
-        addr = address or "unknown"
+        """Handle disconnection of the legacy pairing/continue connection."""
+        proto = self.connected_protocol.value.upper() if self.connected_protocol else "Unknown"
+        addr = self.current_device_address or "unknown"
         log.warning(f"[{proto}] Device disconnected: {addr} (reason={reason})")
+        if self._disconnection_event:
+            self._disconnection_event.set()
 
-        if reason == 5 and address and proto == "CLASSIC":
+    def _on_session_disconnection(self, session: DeviceSession, reason):
+        """Handle disconnection of a run-mode session."""
+        protocol = session.protocol
+        proto = protocol.value.upper()
+        log.warning(f"[{proto}] Device disconnected: {session.address} (reason={reason})")
+
+        if reason == 5 and protocol == Protocol.CLASSIC:
             log.info("[Classic] Authentication failure; keeping bond and retrying")
             retry_delay = self.CLASSIC_AUTH_RETRY_DELAY
             if self.ble_devices and not self._is_protocol_connected(Protocol.BLE):
@@ -386,21 +387,25 @@ class HIDHost(ClassicMixin, BLEMixin):
             self._classic_retry_not_before = time.monotonic() + retry_delay
             log.info(f"[Classic] Deferring retry for {retry_delay:.0f}s")
 
-        session = self.sessions.pop(protocol, None) if protocol else None
-        if session and session.uhid_device:
+        finalized = self.sessions.get(protocol) is session
+        if finalized:
+            self.sessions.pop(protocol, None)
+        if self._pending_sessions.get(protocol) is session:
+            self._pending_sessions.pop(protocol, None)
+        if session.disconnection_event:
+            session.disconnection_event.set()
+        if session.uhid_device:
             try:
                 session.uhid_device.destroy()
             except Exception:
                 pass
 
-        if protocol in self._protocol_disconnection_events:
-            self._protocol_disconnection_events[protocol].set()
         live_sessions = any(
             self._is_session_alive(s) for s in self.sessions.values()
         )
         if self._disconnection_event:
             if (
-                session
+                finalized
                 and protocol == Protocol.CLASSIC
                 and self.ble_devices
                 and not self._is_protocol_connected(Protocol.BLE)
@@ -411,103 +416,138 @@ class HIDHost(ClassicMixin, BLEMixin):
                     "[Classic] Waiting for BLE before restarting Classic "
                     f"after {retry_delay:.0f}s"
                 )
-            elif session and self._has_configured_devices(protocol):
-                log.info(f"[{proto}] Restarting host to restore configured device")
+            elif finalized and self._has_configured_devices(protocol):
+                log.info(f"[{proto}] Restoring configured device")
+            elif not live_sessions and not self._has_any_configured_devices():
                 self._disconnection_event.set()
-            elif not live_sessions:
-                self._disconnection_event.set()
-        if protocol == self.connected_protocol and protocol not in self.sessions:
-            self.connection = None
-            self.peer = None
-            self.current_device_address = None
-            self.connected_protocol = None
-
-    def _forward_report(self, data: bytes):
-        """Deduplicate, log, and forward an HID report to UHID."""
-        self._forward_report_for_protocol(self.connected_protocol, data)
 
     def _forward_report_for_protocol(self, protocol: Protocol, data: bytes):
-        """Deduplicate, log, and forward an HID report for one protocol."""
+        """Log changed HID reports and forward every report for one protocol."""
         session = self.sessions.get(protocol)
         if session:
-            last_report = session.last_report
-            uhid_device = session.uhid_device
-        else:
-            last_report = self._last_report
-            uhid_device = self.uhid_device
-
-        if data != last_report:
+            self._forward_report_for_session(session, data)
+            return
+        if data != self._last_report:
             log.debug(f"Report: {data.hex()}")
-            if session:
-                session.last_report = data
-            else:
-                self._last_report = data
-        if uhid_device:
+            self._last_report = data
+        if self.uhid_device:
             try:
-                uhid_device.send_input(data)
+                self.uhid_device.send_input(data)
             except Exception as e:
                 log.warning(f"UHID send failed: {e}")
 
-    def _load_cached_descriptor(self, address: str = None) -> bool:
+    def _forward_report_for_session(self, session: DeviceSession, data: bytes):
+        """Log changed HID reports and forward every report for one session."""
+        if data != session.last_report:
+            log.debug(f"Report: {data.hex()}")
+            session.last_report = data
+        if session.uhid_device:
+            try:
+                session.uhid_device.send_input(data)
+            except Exception as e:
+                log.warning(f"UHID send failed: {e}")
+
+    def _load_cached_descriptor(
+        self,
+        address: str = None,
+        session: DeviceSession = None,
+    ) -> bool:
         """Load report descriptor and device name from cache. Returns True if found."""
-        address = address or self.current_device_address
+        address = address or (session.address if session else self.current_device_address)
         cache = self.device_cache.load(address)
         if cache and 'report_map' in cache:
-            self.report_map = bytes.fromhex(cache['report_map'])
-            self.device_name = cache.get('device_name')
-            log.success(f"Loaded cached descriptor ({len(self.report_map)} bytes)")
+            report_map = bytes.fromhex(cache['report_map'])
+            device_name = cache.get('device_name')
+            if session:
+                session.report_map = report_map
+                session.device_name = device_name
+            else:
+                self.report_map = report_map
+                self.device_name = device_name
+            log.success(f"Loaded cached descriptor ({len(report_map)} bytes)")
             return True
         return False
 
-    def _create_uhid_device(self):
+    def _create_uhid_device(self, session: DeviceSession = None):
         """Create UHID virtual device."""
-        if not self.report_map:
+        report_map = session.report_map if session else self.report_map
+        if not report_map:
             log.warning("No report descriptor for UHID")
             return
 
         try:
-            name = self._configured_name(self.current_device_address) or self.device_name or "HID Device"
-            descriptor = strip_digitizer_collections(self.report_map)
-            self.uhid_device = UHIDDevice(
+            address = session.address if session else self.current_device_address
+            device_name = session.device_name if session else self.device_name
+            name = self._configured_name(address) or device_name or "HID Device"
+            descriptor = strip_digitizer_collections(report_map)
+            uhid_device = UHIDDevice(
                 name=name,
                 report_descriptor=descriptor,
                 bus=Bus.BLUETOOTH,
                 vendor=0,
                 product=0,
-                uniq=self.current_device_address or "",
+                uniq=address or "",
             )
+            if session:
+                session.uhid_device = uhid_device
+            else:
+                self.uhid_device = uhid_device
             log.success(f"UHID device created: {name}")
             asyncio.get_event_loop().call_later(
-                0.5, self.uhid_device.discover_input_paths)
+                0.5, uhid_device.discover_input_paths)
         except Exception as e:
             log.error(f"Failed to create UHID device: {e}")
 
-    def _record_current_session(self, protocol: Protocol):
-        """Promote the singleton setup fields into a live protocol session."""
-        event = self._protocol_disconnection_events.get(protocol)
-        session = DeviceSession(
+    def _new_session(
+        self,
+        protocol: Protocol,
+        address: str,
+        connection,
+        *,
+        peer=None,
+        hid_host=None,
+    ) -> DeviceSession:
+        return DeviceSession(
             protocol=protocol,
-            address=self.current_device_address,
-            connection=self.connection,
-            peer=self.peer,
-            hid_host=self.hid_host if protocol == Protocol.CLASSIC else None,
-            device_name=self.device_name,
-            report_map=self.report_map,
-            uhid_device=self.uhid_device,
-            disconnection_event=event,
+            address=address,
+            connection=connection,
+            peer=peer,
+            hid_host=hid_host,
+            device_name=self._configured_name(address),
+            disconnection_event=asyncio.Event(),
         )
-        self.sessions[protocol] = session
+
+    def _track_pending_session(self, session: DeviceSession):
+        self._pending_sessions[session.protocol] = session
+
+    def _clear_pending_session(self, session: DeviceSession):
+        if self._pending_sessions.get(session.protocol) is session:
+            self._pending_sessions.pop(session.protocol, None)
+
+    def _record_session(self, session: DeviceSession):
+        """Record a finalized live protocol session."""
+        self._clear_pending_session(session)
+        self.sessions[session.protocol] = session
         if not self._connection_future.done():
             self._connection_future.set_result(session)
 
-    def _protocol_event_is_set(self, protocol: Protocol) -> bool:
-        event = self._protocol_disconnection_events.get(protocol)
-        return bool(event and event.is_set())
+    def _session_event_is_set(self, session: DeviceSession) -> bool:
+        return bool(session.disconnection_event and session.disconnection_event.is_set())
 
-    def _clear_protocol_event(self, protocol: Protocol):
-        event = self._protocol_disconnection_events.get(protocol)
-        if event:
-            event.clear()
+    async def _wait_for_protocol_disconnection(self, protocol: Protocol):
+        """Wait until the protocol's session drops or the whole host is stopping."""
+        session = self.sessions.get(protocol)
+        if not session or not session.disconnection_event:
+            return
+        wait_tasks = [asyncio.create_task(session.disconnection_event.wait())]
+        if self._disconnection_event:
+            wait_tasks.append(asyncio.create_task(self._disconnection_event.wait()))
+        try:
+            await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in wait_tasks:
+                if not task.done():
+                    task.cancel()
 
     def _is_connection_alive(self) -> bool:
         """Check if the connection is still alive and usable."""
@@ -528,6 +568,9 @@ class HIDHost(ClassicMixin, BLEMixin):
 
     def _is_protocol_connecting(self, protocol: Protocol) -> bool:
         """Check if a protocol has an unfinalized live connection."""
+        pending = self._pending_sessions.get(protocol)
+        if pending and self._is_session_alive(pending):
+            return True
         return (
             self.connected_protocol == protocol
             and protocol not in self.sessions
@@ -547,6 +590,17 @@ class HIDHost(ClassicMixin, BLEMixin):
         if protocol == Protocol.BLE:
             return bool(self.ble_devices)
         return False
+
+    def _has_any_configured_devices(self) -> bool:
+        return bool(self.classic_devices or self.ble_devices)
+
+    @asynccontextmanager
+    async def _use_radio(self):
+        await self._radio_lock.acquire()
+        try:
+            yield
+        finally:
+            self._radio_lock.release()
 
     def _is_raw_connection_alive(self, connection) -> bool:
         """Check if a Bumble connection object is still alive."""
@@ -577,7 +631,8 @@ class HIDHost(ClassicMixin, BLEMixin):
                 pass
             self._connection_tasks.clear()
 
-        for session in list(self.sessions.values()):
+        all_sessions = list(self.sessions.values()) + list(self._pending_sessions.values())
+        for session in all_sessions:
             if session.uhid_device:
                 try:
                     session.uhid_device.destroy()
@@ -588,13 +643,13 @@ class HIDHost(ClassicMixin, BLEMixin):
                     try:
                         await asyncio.wait_for(
                             session.hid_host.disconnect_interrupt_channel(), timeout=1.0)
-                    except (asyncio.TimeoutError, Exception):
+                    except Exception:
                         pass
                 if session.hid_host.l2cap_ctrl_channel:
                     try:
                         await asyncio.wait_for(
                             session.hid_host.disconnect_control_channel(), timeout=1.0)
-                    except (asyncio.TimeoutError, Exception):
+                    except Exception:
                         pass
             if self._is_session_alive(session):
                 try:
@@ -604,6 +659,7 @@ class HIDHost(ClassicMixin, BLEMixin):
                 except Exception as e:
                     log.debug(f"Disconnect cleanup: {e}")
         self.sessions.clear()
+        self._pending_sessions.clear()
 
         peer_already_disconnected = (
             self._disconnection_event is not None
@@ -626,13 +682,13 @@ class HIDHost(ClassicMixin, BLEMixin):
                     try:
                         await asyncio.wait_for(
                             self.hid_host.disconnect_interrupt_channel(), timeout=1.0)
-                    except (asyncio.TimeoutError, Exception):
+                    except Exception:
                         pass
                 if self.hid_host.l2cap_ctrl_channel:
                     try:
                         await asyncio.wait_for(
                             self.hid_host.disconnect_control_channel(), timeout=1.0)
-                    except (asyncio.TimeoutError, Exception):
+                    except Exception:
                         pass
             self.hid_host = None
 

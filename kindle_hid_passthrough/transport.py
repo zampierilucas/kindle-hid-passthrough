@@ -8,6 +8,7 @@ from bumble.device import Device
 from bumble.hci import HCI_LE_ADD_DEVICE_TO_RESOLVING_LIST_COMMAND, LeFeatureMask
 from bumble.transport import open_transport
 
+from bt_setup import prepare_bt
 from config import config
 from logging_utils import log
 
@@ -66,6 +67,12 @@ async def create_bumble_device(transport_spec=None, configure=None):
     spec = transport_spec or config.transport
     if not spec:
         raise RuntimeError("No HCI transport available")
+
+    prepare_bt(
+        transport_spec=spec,
+        module_patterns=config.bt_module_patterns,
+        settle_time=config.bt_settle_time,
+    )
 
     log.info("Opening transport...")
     try:

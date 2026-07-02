@@ -117,6 +117,14 @@ class Config:
         # Bluetooth hardware setup
         self.bt_module_patterns = self._get_list('bluetooth', 'module_patterns', None)
         self.bt_settle_time = float(self._get('bluetooth', 'settle_time', '0.5'))
+        self.classic_require_live_descriptor = self._getbool(
+            'classic', 'require_live_descriptor', True)
+
+        # Kindle power lifecycle. The WMT chip is shared by BT and Wi-Fi, so
+        # the daemon must stay off the HCI device around suspend/resume.
+        self.power_monitor_enabled = self._getbool('power', 'monitor_enabled', True)
+        self.power_startup_delay = float(self._get('power', 'startup_delay', '8.0'))
+        self.power_resume_delay = float(self._get('power', 'resume_delay', '20.0'))
 
         # Device identity
         self.device_name = self._get('device', 'name', 'Kindle-HID')
@@ -187,6 +195,12 @@ class Config:
     def _getint(self, section: str, key: str, default: int) -> int:
         try:
             return self._parser.getint(section, key)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            return default
+
+    def _getbool(self, section: str, key: str, default: bool) -> bool:
+        try:
+            return self._parser.getboolean(section, key)
         except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
             return default
 

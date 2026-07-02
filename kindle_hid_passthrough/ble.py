@@ -70,79 +70,80 @@ class BLEMixin:
 
         log.info(f"[BLE] Waiting for {len(addresses)} device(s) (accept list)")
 
-        try:
+        while not self._disconnection_event.is_set():
             connection = None
+            matched_dev = None
+            match_kind = None
 
-            while connection is None and not self._is_protocol_connected(Protocol.BLE):
-                matched_dev = None
-                match_kind = None
+            try:
+                while (
+                    connection is None
+                    and not self._is_protocol_connected(Protocol.BLE)
+                    and not self._disconnection_event.is_set()
+                ):
+                    connection = await self._ble_initiate(self.BLE_INIT_WINDOW)
+                    if connection is not None:
+                        break
 
-                connection = await self._ble_initiate(self.BLE_INIT_WINDOW)
-                if connection is not None:
-                    break
+                    match = await self._ble_scan_for_rotated(known, self.BLE_SCAN_WINDOW)
+                    if match:
+                        target_address, matched_dev, match_kind = match
+                        connection = await self._ble_initiate(
+                            config.connect_timeout, peer=target_address)
 
-                match = await self._ble_scan_for_rotated(known, self.BLE_SCAN_WINDOW)
-                if match:
-                    target_address, matched_dev, match_kind = match
-                    connection = await self._ble_initiate(
-                        config.connect_timeout, peer=target_address)
+                if connection is None:
+                    continue
 
-            if connection is None:
-                return
-
-            if self._is_protocol_connected(Protocol.BLE):
-                await connection.disconnect()
-                return
-
-            addr_str = str(connection.peer_address)
-            log.info(f"[BLE] Device connected: {self._format_device(addr_str)}")
-
-            async with self._session_setup_lock:
                 if self._is_protocol_connected(Protocol.BLE):
                     await connection.disconnect()
-                    return
+                    continue
 
-                self.connection = connection
-                self.peer = Peer(connection)
-                self.hid_host = None
-                self.current_device_address = addr_str
-                self.device_name = self._configured_name(addr_str)
-                self.report_map = None
-                self.hid_reports = []
-                self.uhid_device = None
-                self._last_report = None
-                self.connected_protocol = Protocol.BLE
-                connection.on(
-                    'disconnection',
-                    lambda reason, p=Protocol.BLE, a=addr_str:
-                    self._on_protocol_disconnection(p, a, reason)
-                )
+                addr_str = str(connection.peer_address)
+                log.info(f"[BLE] Device connected: {self._format_device(addr_str)}")
 
-                await self._ble_restore_or_pair()
-                await self._handle_ble_connection()
+                async with self._session_setup_lock:
+                    if self._is_protocol_connected(Protocol.BLE):
+                        await connection.disconnect()
+                        continue
 
-                if match_kind == 'name' and matched_dev is not None:
-                    self._save_rotated_address(matched_dev, normalize_addr(addr_str))
+                    session = self._new_session(
+                        Protocol.BLE,
+                        addr_str,
+                        connection,
+                        peer=Peer(connection),
+                    )
+                    self._track_pending_session(session)
+                    connection.on(
+                        'disconnection',
+                        lambda reason, s=session:
+                        self._on_session_disconnection(s, reason)
+                    )
 
-                self._record_current_session(Protocol.BLE)
-                log.success(f"[BLE] Session ready: {self._format_device(addr_str)}")
+                    try:
+                        await self._ble_restore_or_pair(session)
+                        await self._handle_ble_connection(session)
 
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            log.warning(f"[BLE] Connection failed: {e}")
-            try:
-                if connection is not None:
-                    await connection.disconnect()
-            except Exception:
-                pass
-            if (self.connection is connection
-                    and self.connected_protocol == Protocol.BLE
-                    and Protocol.BLE not in self.sessions):
-                self.connection = None
-                self.peer = None
-                self.current_device_address = None
-                self.connected_protocol = None
+                        if match_kind == 'name' and matched_dev is not None:
+                            self._save_rotated_address(matched_dev, normalize_addr(addr_str))
+
+                        self._record_session(session)
+                        log.success(f"[BLE] Session ready: {self._format_device(addr_str)}")
+                    finally:
+                        if Protocol.BLE not in self.sessions:
+                            self._clear_pending_session(session)
+
+                await self._wait_for_protocol_disconnection(Protocol.BLE)
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning(f"[BLE] Connection failed: {e}")
+                try:
+                    if connection is not None:
+                        await connection.disconnect()
+                except Exception:
+                    pass
+                await asyncio.sleep(1.0)
 
     async def _ble_initiate(self, window: float, peer: Address = None):
         """Legacy create-connection to `peer`, or to the accept list when
@@ -167,47 +168,46 @@ class BLEMixin:
                 future.exception()
         pending.add_done_callback(consume_exception)
 
-        await self._radio_lock.acquire()
-        self.device.on(Device.EVENT_CONNECTION, on_connection)
-        self.device.on(Device.EVENT_CONNECTION_FAILURE, on_failure)
-
-        try:
-            self.device.connect_own_address_type = OwnAddressType.PUBLIC
-            self.device.le_connecting = True
-
-            await self.device.send_command(
-                HCI_LE_Create_Connection_Command(
-                    le_scan_interval=96,
-                    le_scan_window=96,
-                    initiator_filter_policy=0 if peer is not None else 1,
-                    peer_address_type=peer.address_type if peer is not None else 0,
-                    peer_address=peer if peer is not None else Address.ANY,
-                    own_address_type=OwnAddressType.PUBLIC,
-                    connection_interval_min=12,
-                    connection_interval_max=24,
-                    max_latency=0,
-                    supervision_timeout=72,
-                    min_ce_length=0,
-                    max_ce_length=0,
-                ), check_result=True)
+        async with self._use_radio():
+            self.device.on(Device.EVENT_CONNECTION, on_connection)
+            self.device.on(Device.EVENT_CONNECTION_FAILURE, on_failure)
 
             try:
-                return await asyncio.wait_for(asyncio.shield(pending), timeout=window)
-            except asyncio.TimeoutError:
-                return None
+                self.device.connect_own_address_type = OwnAddressType.PUBLIC
+                self.device.le_connecting = True
 
-        finally:
-            if not pending.done():
+                await self.device.send_command(
+                    HCI_LE_Create_Connection_Command(
+                        le_scan_interval=96,
+                        le_scan_window=96,
+                        initiator_filter_policy=0 if peer is not None else 1,
+                        peer_address_type=peer.address_type if peer is not None else 0,
+                        peer_address=peer if peer is not None else Address.ANY,
+                        own_address_type=OwnAddressType.PUBLIC,
+                        connection_interval_min=12,
+                        connection_interval_max=24,
+                        max_latency=0,
+                        supervision_timeout=72,
+                        min_ce_length=0,
+                        max_ce_length=0,
+                    ), check_result=True)
+
                 try:
-                    await self.device.send_command(
-                        HCI_LE_Create_Connection_Cancel_Command())
-                    await asyncio.wait_for(asyncio.shield(pending), timeout=1.0)
-                except Exception:
-                    pass
-            self.device.le_connecting = False
-            self.device.remove_listener(Device.EVENT_CONNECTION, on_connection)
-            self.device.remove_listener(Device.EVENT_CONNECTION_FAILURE, on_failure)
-            self._radio_lock.release()
+                    return await asyncio.wait_for(asyncio.shield(pending), timeout=window)
+                except asyncio.TimeoutError:
+                    return None
+
+            finally:
+                if not pending.done():
+                    try:
+                        await self.device.send_command(
+                            HCI_LE_Create_Connection_Cancel_Command())
+                        await asyncio.wait_for(asyncio.shield(pending), timeout=1.0)
+                    except Exception:
+                        pass
+                self.device.le_connecting = False
+                self.device.remove_listener(Device.EVENT_CONNECTION, on_connection)
+                self.device.remove_listener(Device.EVENT_CONNECTION_FAILURE, on_failure)
 
     async def _ble_scan_for_rotated(self, known: set, window: float):
         """Scan for bonded devices advertising, including from a rotated
@@ -224,33 +224,32 @@ class BLEMixin:
             if match:
                 rotated.set_result((advertisement.address,) + match)
 
-        await self._radio_lock.acquire()
-        self.device.on('advertisement', on_advertisement)
-        scanning = False
-        try:
-            await self.device.start_scanning(
-                legacy=True,
-                own_address_type=OwnAddressType.PUBLIC,
-                filter_duplicates=True,
-            )
-            scanning = True
+        async with self._use_radio():
+            self.device.on('advertisement', on_advertisement)
+            scanning = False
             try:
-                return await asyncio.wait_for(rotated, timeout=window)
-            except asyncio.TimeoutError:
-                return None
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            log.warning(f"[BLE] Rotation scan failed: {e}")
-            return None
-        finally:
-            self.device.remove_listener('advertisement', on_advertisement)
-            if scanning:
+                await self.device.start_scanning(
+                    legacy=True,
+                    own_address_type=OwnAddressType.PUBLIC,
+                    filter_duplicates=True,
+                )
+                scanning = True
                 try:
-                    await self.device.stop_scanning(legacy=True)
-                except Exception:
-                    pass
-            self._radio_lock.release()
+                    return await asyncio.wait_for(rotated, timeout=window)
+                except asyncio.TimeoutError:
+                    return None
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning(f"[BLE] Rotation scan failed: {e}")
+                return None
+            finally:
+                self.device.remove_listener('advertisement', on_advertisement)
+                if scanning:
+                    try:
+                        await self.device.stop_scanning(legacy=True)
+                    except Exception:
+                        pass
 
     def _match_rotated_ble_device(self, advertisement, known: set):
         """Match an advertisement by known address, IRK resolution, or
@@ -350,28 +349,31 @@ class BLEMixin:
                                 await connection.disconnect()
                                 return
 
-                            self.connection = connection
-                            self.peer = Peer(connection)
-                            self.hid_host = None
-                            self.current_device_address = str(found_device.address)
-                            self.device_name = self._configured_name(self.current_device_address)
-                            self.report_map = None
-                            self.hid_reports = []
-                            self.uhid_device = None
-                            self._last_report = None
-                            self.connected_protocol = Protocol.BLE
+                            addr_str = str(found_device.address)
+                            session = self._new_session(
+                                Protocol.BLE,
+                                addr_str,
+                                connection,
+                                peer=Peer(connection),
+                            )
+                            self._track_pending_session(session)
                             connection.on(
                                 'disconnection',
-                                lambda reason, p=Protocol.BLE, a=self.current_device_address:
-                                self._on_protocol_disconnection(p, a, reason)
+                                lambda reason, s=session:
+                                self._on_session_disconnection(s, reason)
                             )
 
-                            await self._ble_restore_or_pair()
-                            await self._handle_ble_connection()
-                            self._record_current_session(Protocol.BLE)
-                            log.success(f"[BLE] Session ready: {self._format_device(self.current_device_address)}")
+                            try:
+                                await self._ble_restore_or_pair(session)
+                                await self._handle_ble_connection(session)
+                                self._record_session(session)
+                                log.success(f"[BLE] Session ready: {self._format_device(addr_str)}")
+                            finally:
+                                if Protocol.BLE not in self.sessions:
+                                    self._clear_pending_session(session)
 
-                        return
+                        await self._wait_for_protocol_disconnection(Protocol.BLE)
+                        break
 
                     except Exception as e:
                         log.warning(f"[BLE] Connect attempt {attempt} failed: {e}")
@@ -381,38 +383,40 @@ class BLEMixin:
             if not self._is_protocol_connected(Protocol.BLE):
                 await asyncio.sleep(3.0)
 
-    async def _ble_restore_or_pair(self):
+    async def _ble_restore_or_pair(self, session=None):
         """Restore BLE bonding or initiate new pairing."""
-        if self.connection.is_encrypted:
+        connection = session.connection if session else self.connection
+        if connection.is_encrypted:
             log.info("[BLE] Connection already encrypted")
             return
 
         if self.device.keystore:
             try:
-                keys = await self.device.keystore.get(str(self.connection.peer_address))
+                keys = await self.device.keystore.get(str(connection.peer_address))
                 if keys:
                     log.info("[BLE] Restoring bonding...")
                     await self._wait_for_ble_operation(
-                        self.connection.encrypt(), "bonding restore")
+                        connection.encrypt(), "bonding restore", session=session)
                     log.success("[BLE] Bonding restored")
                     return
             except Exception as e:
                 log.warning(f"[BLE] Bonding restore failed: {e}")
 
         log.info("[BLE] Initiating pairing...")
-        await self._wait_for_ble_operation(self.connection.pair(), "pairing")
+        await self._wait_for_ble_operation(connection.pair(), "pairing", session=session)
         log.success("[BLE] Pairing complete")
 
     async def _wait_for_ble_operation(self, awaitable, operation: str,
-                                      timeout: float = 20.0):
+                                      timeout: float = 20.0, session=None):
         """Wait for a BLE operation, aborting on disconnect or timeout."""
         op_task = asyncio.ensure_future(awaitable)
         disconnect_task = None
         timeout_task = None
         try:
             wait_tasks = {op_task}
-            disconnect_event = self._protocol_disconnection_events.get(
-                Protocol.BLE) or self._disconnection_event
+            disconnect_event = (
+                session.disconnection_event if session else None
+            ) or self._disconnection_event
             if disconnect_event:
                 if disconnect_event.is_set():
                     op_task.cancel()
@@ -444,39 +448,47 @@ class BLEMixin:
             if timeout_task and not timeout_task.done():
                 timeout_task.cancel()
 
-    async def _setup_ble_hid(self):
+    async def _setup_ble_hid(self, session=None):
         """Discover reports, create UHID, subscribe. Common to connect and post-pair."""
-        if not self.hid_reports:
-            await self._discover_ble_hid_service(process_reports=True)
-        if not self.report_map:
+        hid_reports = session.hid_reports if session else self.hid_reports
+        if not hid_reports:
+            await self._discover_ble_hid_service(process_reports=True, session=session)
+        report_map = session.report_map if session else self.report_map
+        if not report_map:
             raise InvalidStateError("[BLE] No report descriptor available")
-        self._create_uhid_device()
-        await self._subscribe_to_ble_reports()
-        await self._ble_activate_hid_service()
+        self._create_uhid_device(session)
+        await self._subscribe_to_ble_reports(session)
+        await self._ble_activate_hid_service(session)
 
-    async def _handle_ble_connection(self):
+    async def _handle_ble_connection(self, session=None):
         """Finalize BLE connection setup."""
-        self._load_cached_descriptor()
-        await self._setup_ble_hid()
+        self._load_cached_descriptor(session=session)
+        await self._setup_ble_hid(session)
 
-    async def _read_ble_device_name(self):
+    async def _read_ble_device_name(self, session=None):
         """Read BLE device name from Generic Access Service."""
+        peer = session.peer if session else self.peer
         try:
-            for service in self.peer.services:
+            for service in peer.services:
                 if service.uuid == GATT_GENERIC_ACCESS_SERVICE:
-                    await self.peer.discover_characteristics(service=service)
+                    await peer.discover_characteristics(service=service)
                     for char in service.characteristics:
                         if char.uuid == GATT_DEVICE_NAME_CHARACTERISTIC:
-                            value = await self.peer.read_value(char)
-                            self.device_name = bytes(value).decode('utf-8', errors='replace')
-                            log.info(f"[BLE] Device name: {self.device_name}")
+                            value = await peer.read_value(char)
+                            device_name = bytes(value).decode('utf-8', errors='replace')
+                            if session:
+                                session.device_name = device_name
+                            else:
+                                self.device_name = device_name
+                            log.info(f"[BLE] Device name: {device_name}")
                             return
         except Exception as e:
             log.warning(f"[BLE] Could not read device name: {e}")
 
-    async def _process_ble_report_char(self, char):
+    async def _process_ble_report_char(self, char, session=None):
         """Process a BLE Report characteristic."""
-        await self.peer.discover_descriptors(characteristic=char)
+        peer = session.peer if session else self.peer
+        await peer.discover_descriptors(characteristic=char)
 
         report_id = 0
         report_type = HID_REPORT_TYPE_INPUT
@@ -484,7 +496,7 @@ class BLEMixin:
         for desc in char.descriptors:
             if desc.type == GATT_REPORT_REFERENCE_DESCRIPTOR:
                 try:
-                    ref = await self.peer.read_value(desc)
+                    ref = await peer.read_value(desc)
                     if len(ref) >= 2:
                         report_id = ref[0]
                         report_type = ref[1]
@@ -492,28 +504,34 @@ class BLEMixin:
                     pass
 
         if report_type == HID_REPORT_TYPE_INPUT:
-            self.hid_reports.append((report_id, char))
+            if session:
+                session.hid_reports.append((report_id, char))
+            else:
+                self.hid_reports.append((report_id, char))
             log.info(f"[BLE] Found input report {report_id}")
 
-    async def _subscribe_to_ble_reports(self):
+    async def _subscribe_to_ble_reports(self, session=None):
         """Subscribe to BLE HID input report notifications."""
-        for report_id, char in self.hid_reports:
+        peer = session.peer if session else self.peer
+        hid_reports = session.hid_reports if session else self.hid_reports
+        for report_id, char in hid_reports:
             try:
                 def make_callback(rid):
-                    return lambda value: self._on_ble_hid_report(value, rid)
+                    return lambda value: self._on_ble_hid_report(value, rid, session)
 
-                await self.peer.subscribe(char, make_callback(report_id))
+                await peer.subscribe(char, make_callback(report_id))
                 log.success(f"[BLE] Subscribed to report {report_id}")
             except Exception as e:
                 log.warning(f"[BLE] Failed to subscribe to report {report_id}: {e}")
 
-    async def _ble_activate_hid_service(self):
+    async def _ble_activate_hid_service(self, session=None):
         """Write Exit Suspend to HID Control Point and force Report Protocol Mode."""
-        if not self.peer:
+        peer = session.peer if session else self.peer
+        if not peer:
             log.warning("[BLE] No peer for HID activation")
             return
 
-        hid_services = [s for s in self.peer.services if s.uuid == GATT_HUMAN_INTERFACE_DEVICE_SERVICE]
+        hid_services = [s for s in peer.services if s.uuid == GATT_HUMAN_INTERFACE_DEVICE_SERVICE]
         if not hid_services:
             log.warning("[BLE] No HID service found for activation")
             return
@@ -521,25 +539,25 @@ class BLEMixin:
         hid_service = hid_services[0]
         if not hid_service.characteristics:
             log.info("[BLE] Discovering characteristics for HID activation...")
-            await self.peer.discover_characteristics(service=hid_service)
+            await peer.discover_characteristics(service=hid_service)
 
         found_cp = False
         for char in hid_service.characteristics:
             if char.uuid == GATT_HID_CONTROL_POINT_CHARACTERISTIC:
                 found_cp = True
                 try:
-                    await self.peer.write_value(char, bytes([0x01]), with_response=False)
+                    await peer.write_value(char, bytes([0x01]), with_response=False)
                     log.info("[BLE] Wrote Exit Suspend to HID Control Point")
                 except Exception as e:
                     log.warning(f"[BLE] Failed to write HID Control Point: {e}")
 
             elif char.uuid == GATT_PROTOCOL_MODE_CHARACTERISTIC:
                 try:
-                    value = await self.peer.read_value(char)
+                    value = await peer.read_value(char)
                     mode = "Report" if bytes(value) == b'\x01' else "Boot"
                     log.info(f"[BLE] Protocol Mode: {mode}")
                     if bytes(value) != b'\x01':
-                        await self.peer.write_value(char, bytes([0x01]), with_response=False)
+                        await peer.write_value(char, bytes([0x01]), with_response=False)
                         log.info("[BLE] Forced Report Protocol Mode")
                 except Exception as e:
                     log.warning(f"[BLE] Protocol Mode read/write failed: {e}")
@@ -547,9 +565,13 @@ class BLEMixin:
         if not found_cp:
             log.info(f"[BLE] No HID Control Point characteristic (found {len(hid_service.characteristics)} chars)")
 
-    def _on_ble_hid_report(self, value, report_id):
+    def _on_ble_hid_report(self, value, report_id, session=None):
         """Handle BLE HID report."""
-        self._forward_report_for_protocol(Protocol.BLE, bytes([report_id]) + bytes(value))
+        data = bytes([report_id]) + bytes(value)
+        if session:
+            self._forward_report_for_session(session, data)
+        else:
+            self._forward_report_for_protocol(Protocol.BLE, data)
 
     async def _pair_ble(self, address: str) -> bool:
         """Pair with a BLE device."""
@@ -595,14 +617,16 @@ class BLEMixin:
                 self.peer = None
             return False
 
-    async def _discover_ble_hid_service(self, process_reports: bool = False):
+    async def _discover_ble_hid_service(self, process_reports: bool = False, session=None):
         """Discover BLE GATT HID service and cache descriptor."""
-        await self.peer.discover_services()
+        peer = session.peer if session else self.peer
+        await peer.discover_services()
 
-        if not self.device_name:
-            await self._read_ble_device_name()
+        device_name = session.device_name if session else self.device_name
+        if not device_name:
+            await self._read_ble_device_name(session)
 
-        hid_services = [s for s in self.peer.services if s.uuid == GATT_HUMAN_INTERFACE_DEVICE_SERVICE]
+        hid_services = [s for s in peer.services if s.uuid == GATT_HUMAN_INTERFACE_DEVICE_SERVICE]
         if not hid_services:
             if process_reports:
                 raise InvalidStateError("[BLE] HID service not found")
@@ -612,25 +636,31 @@ class BLEMixin:
         hid_service = hid_services[0]
         log.success("[BLE] Found HID service")
 
-        await self.peer.discover_characteristics(service=hid_service)
+        await peer.discover_characteristics(service=hid_service)
 
         for char in hid_service.characteristics:
-            if char.uuid == GATT_REPORT_MAP_CHARACTERISTIC and not self.report_map:
+            report_map = session.report_map if session else self.report_map
+            if char.uuid == GATT_REPORT_MAP_CHARACTERISTIC and not report_map:
                 try:
-                    value = await self.peer.read_value(char)
-                    self.report_map = bytes(value)
-                    log.success(f"[BLE] Got descriptor: {len(self.report_map)} bytes")
+                    value = await peer.read_value(char)
+                    report_map = bytes(value)
+                    if session:
+                        session.report_map = report_map
+                    else:
+                        self.report_map = report_map
+                    log.success(f"[BLE] Got descriptor: {len(report_map)} bytes")
 
-                    address = self.current_device_address
+                    address = session.address if session else self.current_device_address
+                    device_name = session.device_name if session else self.device_name
                     self.device_cache.save(address, {
-                        'report_map': self.report_map.hex(),
-                        'device_name': self.device_name
+                        'report_map': report_map.hex(),
+                        'device_name': device_name
                     })
                 except Exception as e:
                     log.warning(f"[BLE] Failed to read report map: {e}")
 
             elif process_reports and char.uuid == GATT_REPORT_CHARACTERISTIC:
-                await self._process_ble_report_char(char)
+                await self._process_ble_report_char(char, session)
 
     async def _continue_ble_after_pairing(self):
         """Continue BLE connection after pairing."""

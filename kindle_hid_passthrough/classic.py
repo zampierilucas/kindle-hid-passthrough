@@ -2,7 +2,7 @@
 """Classic Bluetooth HID handler mixin for HIDHost."""
 
 import asyncio
-from typing import List
+from typing import List, Optional
 
 from bumble.core import BT_BR_EDR_TRANSPORT, BT_HUMAN_INTERFACE_DEVICE_SERVICE, InvalidStateError, TimeoutError as BumbleTimeoutError
 from bumble.hci import (
@@ -90,25 +90,25 @@ class ClassicMixin:
                         pass
                     return
 
-                self._clear_protocol_event(Protocol.CLASSIC)
-                self.connection = connection
-                self.peer = None
-                self.hid_host = classic_hid_host
-                self.current_device_address = addr_str
-                self.device_name = self._configured_name(addr_str)
-                self.report_map = None
-                self.hid_reports = []
-                self.uhid_device = None
-                self._last_report = None
-                self.connected_protocol = Protocol.CLASSIC
+                session = self._new_session(
+                    Protocol.CLASSIC,
+                    addr_str,
+                    connection,
+                    hid_host=classic_hid_host,
+                )
+                self._track_pending_session(session)
 
                 connection.on(
                     'disconnection',
-                    lambda reason, p=Protocol.CLASSIC, a=addr_str:
-                    self._on_protocol_disconnection(p, a, reason)
+                    lambda reason, s=session:
+                    self._on_session_disconnection(s, reason)
                 )
 
-                await self._setup_classic_connection(connection, classic_hid_host)
+                try:
+                    await self._setup_classic_connection(session)
+                finally:
+                    if Protocol.CLASSIC not in self.sessions:
+                        self._clear_pending_session(session)
 
         def on_connection_event(connection):
             is_classic = (hasattr(connection, 'transport')
@@ -125,11 +125,20 @@ class ClassicMixin:
 
         active_addresses = [d.address for d in self.classic_devices if d.address != '*']
         if active_addresses:
-            await self._classic_active_connect_loop(active_addresses)
+            while not self._disconnection_event.is_set():
+                await self._classic_active_connect_loop(active_addresses)
+                if self._disconnection_event.is_set():
+                    break
+                if self._is_protocol_connected(Protocol.CLASSIC):
+                    await self._wait_for_protocol_disconnection(Protocol.CLASSIC)
+                elif not self._disconnection_event.is_set():
+                    await asyncio.sleep(self.ACTIVE_RETRY_INTERVAL)
 
-    async def _setup_classic_connection(self, connection, hid_host):
+    async def _setup_classic_connection(self, session):
         """Authenticate, open HID channels, and create the Classic UHID session."""
-        addr_str = str(connection.peer_address)
+        connection = session.connection
+        hid_host = session.hid_host
+        addr_str = session.address
 
         hid_host.on_device_connection(connection)
 
@@ -149,31 +158,22 @@ class ClassicMixin:
             except Exception as e:
                 log.warning(f"[Classic] Encryption: {e}")
 
-        if self._protocol_event_is_set(Protocol.CLASSIC):
+        if self._session_event_is_set(session):
             log.warning("[Classic] Connection lost during authentication")
-            self.connection = None
-            self.current_device_address = None
-            self.connected_protocol = None
             return
 
         log.info("[Classic] Waiting for HID channels...")
         for _ in range(30):
-            if self._protocol_event_is_set(Protocol.CLASSIC):
+            if self._session_event_is_set(session):
                 log.warning("[Classic] Connection lost while waiting for HID channels")
-                self.connection = None
-                self.current_device_address = None
-                self.connected_protocol = None
                 return
             if hid_host.l2cap_intr_channel and hid_host.l2cap_ctrl_channel:
                 log.success("[Classic] HID channels opened")
                 break
             await asyncio.sleep(0.1)
 
-        if self._protocol_event_is_set(Protocol.CLASSIC):
+        if self._session_event_is_set(session):
             log.warning("[Classic] Connection lost during HID setup")
-            self.connection = None
-            self.current_device_address = None
-            self.connected_protocol = None
             return
 
         if not hid_host.l2cap_ctrl_channel:
@@ -188,11 +188,8 @@ class ClassicMixin:
             except Exception:
                 pass
 
-        if self._protocol_event_is_set(Protocol.CLASSIC):
+        if self._session_event_is_set(session):
             log.warning("[Classic] Connection lost during channel setup")
-            self.connection = None
-            self.current_device_address = None
-            self.connected_protocol = None
             return
 
         if not hid_host.l2cap_intr_channel:
@@ -201,14 +198,12 @@ class ClassicMixin:
                 await connection.disconnect()
             except Exception:
                 pass
-            self.connection = None
-            self.current_device_address = None
-            self.connected_protocol = None
             return
 
-        self._classic_set_report_protocol()
-        await self._handle_classic_connection()
-        self._record_current_session(Protocol.CLASSIC)
+        self._classic_set_report_protocol(session)
+        if not await self._handle_classic_connection(session):
+            return
+        self._record_session(session)
         log.success(f"[Classic] Session ready: {self._format_device(addr_str)}")
 
     def _is_classic_allowed(self, addr_str: str) -> bool:
@@ -277,47 +272,42 @@ class ClassicMixin:
                 log.info(f"[Classic] Attempt {attempt}: {self._format_device(addr)}")
 
                 target = Address(addr, Address.PUBLIC_DEVICE_ADDRESS)
-                await self._radio_lock.acquire()
-                connect_task = asyncio.create_task(
-                    self.device.connect(target, transport=BT_BR_EDR_TRANSPORT)
-                )
-                backoff = 0.0
-                # The finally below guarantees connect_task is cancelled and
-                # awaited on every exit path, including suspend cancellation —
-                # otherwise it leaks and asyncio logs an unretrieved exception
-                # when bumble eventually raises HCI_PAGE_TIMEOUT.
-                try:
-                    timed_out = True
-                    for _ in range(self.ACTIVE_CONNECT_TIMEOUT):
-                        if self._is_protocol_connected(Protocol.CLASSIC):
-                            return
-                        done, _ = await asyncio.wait([connect_task], timeout=0.5)
-                        if done:
-                            timed_out = False
-                            break
-
-                    if timed_out:
-                        log.info(f"[Classic] {addr} timed out")
-                        backoff = 3.0
-                    else:
-                        await connect_task
-
-                except Exception as e:
-                    if "DISALLOWED" in str(e) or "PENDING" in str(e):
-                        log.warning("[Classic] HCI busy, waiting...")
-                        backoff = 5.0
-                    else:
-                        log.info(f"[Classic] Connect failed: {e}")
-                        backoff = 2.0
-
-                finally:
-                    if not connect_task.done():
-                        connect_task.cancel()
+                async with self._use_radio():
+                    connect_task = asyncio.create_task(
+                        self.device.connect(target, transport=BT_BR_EDR_TRANSPORT)
+                    )
+                    backoff = 0.0
                     try:
-                        await connect_task
-                    except (asyncio.CancelledError, Exception):
-                        pass
-                    self._radio_lock.release()
+                        timed_out = True
+                        for _ in range(self.ACTIVE_CONNECT_TIMEOUT):
+                            if self._is_protocol_connected(Protocol.CLASSIC):
+                                return
+                            done, _ = await asyncio.wait([connect_task], timeout=0.5)
+                            if done:
+                                timed_out = False
+                                break
+
+                        if timed_out:
+                            log.info(f"[Classic] {addr} timed out")
+                            backoff = 3.0
+                        else:
+                            await connect_task
+
+                    except Exception as e:
+                        if "DISALLOWED" in str(e) or "PENDING" in str(e):
+                            log.warning("[Classic] HCI busy, waiting...")
+                            backoff = 5.0
+                        else:
+                            log.info(f"[Classic] Connect failed: {e}")
+                            backoff = 2.0
+
+                    finally:
+                        if not connect_task.done():
+                            connect_task.cancel()
+                        try:
+                            await connect_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
                 if backoff:
                     await asyncio.sleep(backoff)
@@ -325,34 +315,62 @@ class ClassicMixin:
             if not self._is_protocol_connected(Protocol.CLASSIC):
                 await asyncio.sleep(self.ACTIVE_RETRY_INTERVAL)
 
-    def _classic_set_report_protocol(self):
+    def _classic_set_report_protocol(self, session=None):
         """Send HIDP SET_PROTOCOL(Report) on the control channel."""
-        if not self.hid_host or not self.hid_host.l2cap_ctrl_channel:
+        hid_host = session.hid_host if session else self.hid_host
+        if not hid_host or not hid_host.l2cap_ctrl_channel:
             return
         try:
-            self.hid_host.set_protocol(Message.ProtocolMode.REPORT_PROTOCOL)
+            hid_host.set_protocol(Message.ProtocolMode.REPORT_PROTOCOL)
             log.info("[Classic] Sent SET_PROTOCOL (Report)")
         except Exception as e:
             log.warning(f"[Classic] SET_PROTOCOL failed: {e}")
 
-    def _finalize_classic_hid(self):
+    def _finalize_classic_hid(self, session=None):
         """Apply fallback descriptor if needed and create UHID."""
+        if session:
+            if not session.report_map:
+                session.report_map = FALLBACK_HID_DESCRIPTOR
+                log.warning("[Classic] Using fallback descriptor")
+            self._create_uhid_device(session)
+            return
         if not self.report_map:
             self.report_map = FALLBACK_HID_DESCRIPTOR
             log.warning("[Classic] Using fallback descriptor")
         self._create_uhid_device()
 
-    async def _handle_classic_connection(self):
+    async def _handle_classic_connection(self, session=None) -> bool:
         """Finalize Classic connection setup."""
-        if not self.hid_host.l2cap_intr_channel:
+        hid_host = session.hid_host if session else self.hid_host
+        connection = session.connection if session else self.connection
+        if not hid_host.l2cap_intr_channel:
             raise InvalidStateError("HID interrupt channel not connected")
 
-        if not self._load_cached_descriptor():
-            await self._query_classic_sdp()
+        if config.classic_require_live_descriptor:
+            if session:
+                session.report_map = None
+            else:
+                self.report_map = None
+            live = await self._query_classic_sdp(session=session)
+            if live is None and self._load_cached_descriptor(session=session):
+                log.warning("[Classic] SDP query failed; using cached descriptor")
+            elif not live:
+                log.warning(
+                    "[Classic] No live HID descriptor; dropping link without "
+                    "creating a Kindle input device"
+                )
+                try:
+                    await connection.disconnect()
+                except Exception:
+                    pass
+                return False
+        elif not self._load_cached_descriptor(session=session):
+            await self._query_classic_sdp(session=session)
 
-        self._finalize_classic_hid()
+        self._finalize_classic_hid(session)
+        return (session.uhid_device if session else self.uhid_device) is not None
 
-    def _parse_hid_descriptor_list(self, data_element):
+    def _parse_hid_descriptor_list(self, data_element, session=None):
         """Parse HID Descriptor List from SDP."""
         try:
             if hasattr(data_element, 'value'):
@@ -374,12 +392,18 @@ class ClassicMixin:
                             if hasattr(desc_data, 'value'):
                                 desc_data = desc_data.value
 
+                            report_map = None
                             if isinstance(desc_data, bytes):
-                                self.report_map = desc_data
+                                report_map = desc_data
                             elif isinstance(desc_data, (list, tuple)):
-                                self.report_map = bytes(desc_data)
-
-                            log.success(f"[Classic] Got descriptor: {len(self.report_map)} bytes")
+                                report_map = bytes(desc_data)
+                            if report_map is None:
+                                return
+                            if session:
+                                session.report_map = report_map
+                            else:
+                                self.report_map = report_map
+                            log.success(f"[Classic] Got descriptor: {len(report_map)} bytes")
                             return
         except Exception as e:
             log.warning(f"[Classic] Failed to parse descriptor: {e}")
@@ -397,12 +421,15 @@ class ClassicMixin:
     def _on_virtual_cable_unplug(self):
         """Handle virtual cable unplug."""
         log.warning("[Classic] Virtual cable unplugged")
-        session = self.sessions.get(Protocol.CLASSIC)
+        session = (
+            self.sessions.get(Protocol.CLASSIC)
+            or self._pending_sessions.get(Protocol.CLASSIC)
+        )
         self._virtual_cable_unplug_address = (
             session.address if session else self.current_device_address
         )
-        if Protocol.CLASSIC in self._protocol_disconnection_events:
-            self._protocol_disconnection_events[Protocol.CLASSIC].set()
+        if session and session.disconnection_event:
+            session.disconnection_event.set()
         if self._disconnection_event:
             self._disconnection_event.set()
 
@@ -498,50 +525,68 @@ class ClassicMixin:
                 self.connection = None
             return False
 
-    async def _query_classic_sdp(self, address: str = None):
-        """Query SDP for HID descriptor and cache it."""
-        if not self.connection:
-            return
+    async def _query_classic_sdp(self, address: str = None, session=None) -> Optional[bool]:
+        """Query SDP for the HID descriptor and cache it.
 
-        address = address or self.current_device_address
+        Returns True when a descriptor was found, False when the peer answered
+        without one, and None when the query itself failed.
+        """
+        connection = session.connection if session else self.connection
+        if not connection:
+            return None
+
+        address = address or (session.address if session else self.current_device_address)
 
         log.info("[Classic] Querying SDP...")
         try:
-            sdp_client = SDPClient(self.connection)
+            sdp_client = SDPClient(connection)
             await asyncio.wait_for(sdp_client.connect(), timeout=5.0)
-
-            result = await asyncio.wait_for(
-                sdp_client.search_attributes(
-                    [BT_HUMAN_INTERFACE_DEVICE_SERVICE],
-                    [0x0100, 0x0206]
-                ),
-                timeout=10.0
-            )
-
-            if result:
-                for record in result:
-                    for attr in record:
-                        if hasattr(attr, 'id') and attr.id == 0x0206:
-                            self._parse_hid_descriptor_list(attr.value)
-                        elif hasattr(attr, 'id') and attr.id == 0x0100:
-                            try:
-                                name = attr.value.value
-                                if isinstance(name, bytes):
-                                    name = name.decode('utf-8', errors='replace')
-                                self.device_name = str(name)
-                            except Exception:
-                                pass
-
-            await sdp_client.disconnect()
-
-            if self.report_map:
-                self.device_cache.save(address, {
-                    'report_map': self.report_map.hex(),
-                    'device_name': self.device_name or 'Unknown'
-                })
-                log.success(f"[Classic] Cached descriptor ({len(self.report_map)} bytes)")
+            try:
+                result = await asyncio.wait_for(
+                    sdp_client.search_attributes(
+                        [BT_HUMAN_INTERFACE_DEVICE_SERVICE],
+                        [0x0100, 0x0206]
+                    ),
+                    timeout=10.0
+                )
+            finally:
+                try:
+                    await sdp_client.disconnect()
+                except Exception:
+                    pass
         except Exception as e:
             log.warning(f"[Classic] SDP query failed: {e}")
+            return None
+
+        try:
+            for record in result or []:
+                for attr in record:
+                    if hasattr(attr, 'id') and attr.id == 0x0206:
+                        self._parse_hid_descriptor_list(attr.value, session=session)
+                    elif hasattr(attr, 'id') and attr.id == 0x0100:
+                        try:
+                            name = attr.value.value
+                            if isinstance(name, bytes):
+                                name = name.decode('utf-8', errors='replace')
+                            if session:
+                                session.device_name = str(name)
+                            else:
+                                self.device_name = str(name)
+                        except Exception:
+                            pass
+        except Exception as e:
+            log.warning(f"[Classic] SDP parse failed: {e}")
+
+        report_map = session.report_map if session else self.report_map
+        if not report_map:
+            return False
+        device_name = session.device_name if session else self.device_name
+        self.device_cache.save(address, {
+            'report_map': report_map.hex(),
+            'device_name': device_name or 'Unknown'
+        })
+        log.success(f"[Classic] Cached descriptor ({len(report_map)} bytes)")
+        return True
 
     async def _continue_classic_after_pairing(self):
         """Continue Classic connection after pairing."""

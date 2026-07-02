@@ -127,7 +127,7 @@ class DaemonController:
         async with self._op_lock:
             self._scan_live_devices = []
             try:
-                await self.daemon.suspend()
+                await self.daemon.suspend(reason="operation")
                 config.validate_keystore()
 
                 await self.daemon.scan(
@@ -145,7 +145,7 @@ class DaemonController:
             finally:
                 self.is_scanning = False
                 self._scan_stop_event = None
-                await self.daemon.resume()
+                await self.daemon.resume(reason="operation")
 
     # ---- Pair ----
 
@@ -154,7 +154,7 @@ class DaemonController:
         if self.is_pairing:
             return
         self.pair_result = None
-        self.is_pairing = True  # Set immediately so status polls see it
+        self.is_pairing = True
         asyncio.run_coroutine_threadsafe(
             self._do_pair(address, protocol, name), self.loop
         )
@@ -162,7 +162,7 @@ class DaemonController:
     async def _do_pair(self, address, protocol, name):
         async with self._op_lock:
             try:
-                await self.daemon.suspend()
+                await self.daemon.suspend(reason="operation")
                 config.validate_keystore()
 
                 success = await self.daemon.pair(address, protocol, name)
@@ -181,7 +181,7 @@ class DaemonController:
                 self.pair_result = {"ok": False, "address": address, "error": error}
             finally:
                 self.is_pairing = False
-                await self.daemon.resume()
+                await self.daemon.resume(reason="operation")
 
     # ---- Connect / Resume ----
 
@@ -203,17 +203,17 @@ class DaemonController:
     async def _do_resume(self):
         async with self._op_lock:
             if self.daemon._suspended:
-                await self.daemon.resume()
+                await self.daemon.resume(reason="user")
 
     async def _do_connect(self, address, protocol):
         async with self._op_lock:
             try:
-                await self.daemon.suspend()
+                await self.daemon.suspend(reason="operation")
                 config.add_device(address, protocol)
-                await self.daemon.resume()
+                await self.daemon.resume(reason="operation")
             except Exception as e:
                 logger.error(f"Connect failed: {e}")
-                await self.daemon.resume()
+                await self.daemon.resume(reason="operation")
 
     # ---- Remove ----
 
@@ -247,7 +247,7 @@ class DaemonController:
         async with self._op_lock:
             try:
                 if suspend:
-                    await self.daemon.suspend()
+                    await self.daemon.suspend(reason="manual")
                 else:
                     await self.daemon.disconnect()
             except Exception as e:
