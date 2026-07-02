@@ -45,6 +45,7 @@ class DeviceSession:
     disconnection_event: Optional[asyncio.Event] = None
     last_report: Optional[bytes] = None
     keyboard_last_keys: tuple = field(default_factory=tuple)
+    established_at: float = 0.0
 
 
 class HIDHost(ClassicMixin, BLEMixin):
@@ -61,6 +62,14 @@ class HIDHost(ClassicMixin, BLEMixin):
     ACTIVE_CONNECT_TIMEOUT = 10
     CLASSIC_AUTH_RETRY_DELAY = 8.0
     CLASSIC_AUTH_RETRY_DELAY_WITH_PENDING_BLE = 20.0
+
+    # A session that ends this quickly, by the remote's choice, without ever
+    # sending input counts as a flap (e.g. a phone whose HID app is closed).
+    CLASSIC_FLAP_WINDOW = 30.0
+    CLASSIC_FLAP_BACKOFF_BASE = 20.0
+    CLASSIC_FLAP_BACKOFF_MAX = 300.0
+    # HCI: remote user terminated / low resources / power off
+    CLASSIC_REMOTE_DISCONNECT_REASONS = frozenset({0x13, 0x14, 0x15})
 
     def __init__(self, transport_spec: str = None):
         self.transport_spec = transport_spec or config.transport
@@ -99,6 +108,8 @@ class HIDHost(ClassicMixin, BLEMixin):
         self._auth_failure_address = None
         self._virtual_cable_unplug_address = None
         self._classic_retry_not_before = 0.0
+        self._classic_flap_counts: dict[str, int] = {}
+        self._classic_flap_until: dict[str, float] = {}
         self.last_pair_error = None
         self._radio_lock = None
 
@@ -401,6 +412,9 @@ class HIDHost(ClassicMixin, BLEMixin):
             except Exception:
                 pass
 
+        if finalized and protocol == Protocol.CLASSIC:
+            self._update_classic_flap_backoff(session, reason)
+
         live_sessions = any(
             self._is_session_alive(s) for s in self.sessions.values()
         )
@@ -570,6 +584,7 @@ class HIDHost(ClassicMixin, BLEMixin):
     def _record_session(self, session: DeviceSession):
         """Record a finalized live protocol session."""
         self._clear_pending_session(session)
+        session.established_at = time.monotonic()
         self.sessions[session.protocol] = session
         if not self._connection_future.done():
             self._connection_future.set_result(session)
@@ -625,6 +640,45 @@ class HIDHost(ClassicMixin, BLEMixin):
         if protocol == Protocol.CLASSIC:
             return max(0.0, self._classic_retry_not_before - time.monotonic())
         return 0.0
+
+    def _update_classic_flap_backoff(self, session: DeviceSession, reason):
+        """Escalate the dial backoff for a device that keeps accepting a
+        session and then dropping it, and clear it after a healthy session."""
+        addr = normalize_addr(session.address)
+        duration = (
+            time.monotonic() - session.established_at
+            if session.established_at else 0.0
+        )
+        if session.last_report is not None or duration >= self.CLASSIC_FLAP_WINDOW:
+            if self._classic_flap_counts.pop(addr, None) is not None:
+                self._classic_flap_until.pop(addr, None)
+                log.info(
+                    f"[Classic] {self._format_device(addr)} session healthy; "
+                    "clearing flap backoff"
+                )
+            return
+
+        if reason not in self.CLASSIC_REMOTE_DISCONNECT_REASONS:
+            return
+
+        count = self._classic_flap_counts.get(addr, 0) + 1
+        self._classic_flap_counts[addr] = count
+        delay = min(
+            self.CLASSIC_FLAP_BACKOFF_BASE * (2 ** (count - 1)),
+            self.CLASSIC_FLAP_BACKOFF_MAX,
+        )
+        self._classic_flap_until[addr] = time.monotonic() + delay
+        log.warning(
+            f"[Classic] {self._format_device(addr)} dropped by remote after "
+            f"{duration:.0f}s without input ({count} in a row); "
+            f"deferring dial for {delay:.0f}s"
+        )
+
+    def _classic_dial_delay(self, addr: str) -> float:
+        """Seconds before we should dial this address again (flap backoff).
+        Inbound connections from the device are still accepted immediately."""
+        until = self._classic_flap_until.get(normalize_addr(addr), 0.0)
+        return max(0.0, until - time.monotonic())
 
     def _has_configured_devices(self, protocol: Protocol) -> bool:
         """Check if a protocol should be restored after a live session drops."""

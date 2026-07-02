@@ -261,6 +261,14 @@ class ClassicMixin:
                 if self._is_protocol_connecting(Protocol.CLASSIC):
                     break
 
+                flap_delay = self._classic_dial_delay(addr)
+                if flap_delay > 0:
+                    log.debug(
+                        f"[Classic] {self._format_device(addr)} in flap "
+                        f"backoff for {flap_delay:.0f}s; skipping dial"
+                    )
+                    continue
+
                 if self._has_live_classic_connection(addr):
                     log.info(
                         f"[Classic] {self._format_device(addr)} already linked; "

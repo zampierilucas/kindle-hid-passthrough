@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 
@@ -450,6 +451,81 @@ class KeyboardReportSerializationTests(unittest.TestCase):
         host._forward_report_for_session(session, b"\x03\x01\x02")
 
         self.assertEqual([b"\x03\x01\x02"], session.uhid_device.inputs)
+
+
+class ClassicFlapBackoffTests(unittest.TestCase):
+    ADDR = "64:9D:38:F0:E4:C1"
+
+    def make_host(self):
+        cache_dir = tempfile.mkdtemp(prefix="hid-host-test-")
+        config.cache_dir = cache_dir
+        config.pairing_keys_file = os.path.join(cache_dir, "pairing_keys.json")
+        host = HIDHost()
+        host._disconnection_event = asyncio.Event()
+        host._connection_future = DummyFuture()
+        host.classic_devices = [
+            DeviceConfig(self.ADDR, Protocol.CLASSIC, "Pixel 10")
+        ]
+        return host
+
+    def end_session(self, host, reason=0x13, age=4.0, last_report=None):
+        session = host._new_session(
+            Protocol.CLASSIC,
+            self.ADDR + "/P",
+            FakeConnection(),
+        )
+        host._record_session(session)
+        session.established_at = time.monotonic() - age
+        session.last_report = last_report
+        host._on_session_disconnection(session, reason=reason)
+
+    def test_repeated_remote_drops_escalate_dial_backoff(self):
+        host = self.make_host()
+
+        self.end_session(host)
+        first = host._classic_dial_delay(self.ADDR)
+        self.assertGreater(first, 0.0)
+        self.assertLessEqual(first, host.CLASSIC_FLAP_BACKOFF_BASE)
+
+        self.end_session(host)
+        second = host._classic_dial_delay(self.ADDR)
+        self.assertGreater(second, first)
+
+    def test_backoff_caps_at_maximum(self):
+        host = self.make_host()
+
+        for _ in range(10):
+            self.end_session(host)
+
+        self.assertLessEqual(
+            host._classic_dial_delay(self.ADDR),
+            host.CLASSIC_FLAP_BACKOFF_MAX,
+        )
+
+    def test_long_session_clears_backoff(self):
+        host = self.make_host()
+
+        self.end_session(host)
+        self.end_session(host, age=60.0)
+
+        self.assertEqual(0.0, host._classic_dial_delay(self.ADDR))
+
+    def test_session_with_input_clears_backoff_even_when_short(self):
+        host = self.make_host()
+
+        self.end_session(host)
+        self.end_session(
+            host, last_report=b"\x01\x00\x00\x04\x00\x00\x00\x00"
+        )
+
+        self.assertEqual(0.0, host._classic_dial_delay(self.ADDR))
+
+    def test_local_disconnect_reason_does_not_add_backoff(self):
+        host = self.make_host()
+
+        self.end_session(host, reason=0x08)
+
+        self.assertEqual(0.0, host._classic_dial_delay(self.ADDR))
 
 
 class DaemonPowerLifecycleTests(unittest.IsolatedAsyncioTestCase):
