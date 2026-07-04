@@ -202,6 +202,7 @@ install_bumble_stubs()
 from config import Protocol, config  # noqa: E402
 from daemon import HIDDaemon  # noqa: E402
 from host import DeviceConfig, HIDHost  # noqa: E402
+from power_events import KindlePowerEventMonitor  # noqa: E402
 
 
 class FakeConnection:
@@ -527,8 +528,35 @@ class ClassicFlapBackoffTests(unittest.TestCase):
 
         self.assertEqual(0.0, host._classic_dial_delay(self.ADDR))
 
+    def test_all_backed_off_devices_return_next_dial_delay(self):
+        host = self.make_host()
+        host._classic_flap_until[self.ADDR] = time.monotonic() + 120.0
+
+        delay = host._classic_backoff_delay_for_all([self.ADDR])
+
+        self.assertGreater(delay, 0.0)
+        self.assertLessEqual(delay, 120.0)
+
+    def test_one_ready_device_disables_all_backoff_sleep(self):
+        host = self.make_host()
+        other = "AA:BB:CC:DD:EE:FF"
+        host._classic_flap_until[self.ADDR] = time.monotonic() + 120.0
+
+        self.assertEqual(
+            0.0,
+            host._classic_backoff_delay_for_all([self.ADDR, other]),
+        )
+
 
 class DaemonPowerLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_going_to_screensaver_suspends_for_power(self):
+        daemon = HIDDaemon()
+
+        await daemon.handle_power_event("goingToScreenSaver")
+
+        self.assertTrue(daemon._suspended)
+        self.assertEqual("power", daemon._suspend_reason)
+
     async def test_operation_resume_is_deferred_during_power_recovery(self):
         daemon = HIDDaemon()
         daemon._suspended = True
@@ -572,6 +600,45 @@ class DaemonPowerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await daemon.resume(reason="power")
 
         self.assertFalse(daemon._suspended)
+
+
+class PowerEventMonitorTests(unittest.TestCase):
+    def test_parse_going_to_screensaver_event(self):
+        async def handler(_event):
+            pass
+
+        monitor = KindlePowerEventMonitor(handler)
+
+        self.assertEqual(
+            "goingToScreenSaver",
+            monitor._parse_event("com.lab126.powerd goingToScreenSaver\n"),
+        )
+
+    def test_start_is_idempotent(self):
+        async def handler(_event):
+            pass
+
+        created = []
+
+        class FakeTask:
+            def done(self):
+                return False
+
+        def fake_create_task(coro, name=None):
+            coro.close()
+            created.append(name)
+            return FakeTask()
+
+        original_create_task = asyncio.create_task
+        asyncio.create_task = fake_create_task
+        try:
+            monitor = KindlePowerEventMonitor(handler)
+            monitor.start()
+            monitor.start()
+        finally:
+            asyncio.create_task = original_create_task
+
+        self.assertEqual(["power_event_monitor"], created)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ class KindlePowerEventMonitor:
     """
 
     EVENTS = (
+        "goingToScreenSaver",
         "readyToSuspend",
         "suspending",
         "wakeupFromSuspend",
@@ -42,6 +43,10 @@ class KindlePowerEventMonitor:
         if not self.enabled:
             log.info("Power event monitor disabled")
             return
+        if self._task and not self._task.done():
+            log.debug("Power event monitor already running")
+            return
+        self._stopped = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="power_event_monitor")
 
     async def stop(self):
@@ -59,6 +64,8 @@ class KindlePowerEventMonitor:
                 await self._task
             except asyncio.CancelledError:
                 pass
+        self._process = None
+        self._task = None
 
     async def _run(self):
         while not self._stopped.is_set():
@@ -104,6 +111,7 @@ class KindlePowerEventMonitor:
                     except asyncio.TimeoutError:
                         self._process.kill()
                         await self._process.wait()
+                self._process = None
 
             if not self._stopped.is_set():
                 log.warning("Power event monitor exited; restarting in 5s")

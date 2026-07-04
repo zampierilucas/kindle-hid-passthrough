@@ -171,7 +171,7 @@ class HIDDaemon:
 
     async def handle_power_event(self, event: str):
         """Suspend/resume around Kindle power lifecycle events."""
-        if event in ("readyToSuspend", "suspending"):
+        if event in ("goingToScreenSaver", "readyToSuspend", "suspending"):
             if self._power_resume_task and not self._power_resume_task.done():
                 self._power_resume_task.cancel()
             await self.suspend(reason="power")

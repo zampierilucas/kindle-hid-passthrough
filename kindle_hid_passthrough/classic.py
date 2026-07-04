@@ -254,7 +254,19 @@ class ClassicMixin:
                 await asyncio.sleep(0.5)
                 continue
 
-            attempt += 1
+            all_backoff_delay = self._classic_backoff_delay_for_all(addresses)
+            if all_backoff_delay > 0:
+                wait_time = min(
+                    all_backoff_delay,
+                    self.CLASSIC_BACKOFF_POLL_INTERVAL,
+                )
+                log.debug(
+                    "[Classic] All active devices are in flap backoff; "
+                    f"next dial in {all_backoff_delay:.0f}s"
+                )
+                await asyncio.sleep(wait_time)
+                continue
+
             for addr in addresses:
                 if self._is_protocol_connected(Protocol.CLASSIC):
                     return
@@ -277,6 +289,7 @@ class ClassicMixin:
                     await asyncio.sleep(1.0)
                     continue
 
+                attempt += 1
                 log.info(f"[Classic] Attempt {attempt}: {self._format_device(addr)}")
 
                 target = Address(addr, Address.PUBLIC_DEVICE_ADDRESS)
@@ -322,6 +335,16 @@ class ClassicMixin:
 
             if not self._is_protocol_connected(Protocol.CLASSIC):
                 await asyncio.sleep(self.ACTIVE_RETRY_INTERVAL)
+
+    def _classic_backoff_delay_for_all(self, addresses: List[str]) -> float:
+        """Return the shortest flap backoff if every active address is backed off."""
+        delays = []
+        for addr in addresses:
+            delay = self._classic_dial_delay(addr)
+            if delay <= 0:
+                return 0.0
+            delays.append(delay)
+        return min(delays) if delays else 0.0
 
     def _classic_set_report_protocol(self, session=None):
         """Send HIDP SET_PROTOCOL(Report) on the control channel."""
