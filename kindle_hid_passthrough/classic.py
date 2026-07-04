@@ -48,11 +48,7 @@ class ClassicMixin:
         classic_hid_host.on(BumbleHIDHost.EVENT_VIRTUAL_CABLE_UNPLUG, self._on_virtual_cable_unplug)
         log.info(f"[Classic] HID Host ready (PSM 0x{HID_CONTROL_PSM:04X}, 0x{HID_INTERRUPT_PSM:04X})")
 
-        log.info("[Classic] Enabling Page Scan...")
-        await self.device.host.send_command(
-            HCI_Write_Scan_Enable_Command(scan_enable=0x02),
-            check_result=True
-        )
+        await self._set_classic_page_scan(True)
 
         async def on_classic_connection(connection):
             if self._is_protocol_connected(Protocol.CLASSIC):
@@ -256,6 +252,7 @@ class ClassicMixin:
 
             all_backoff_delay = self._classic_backoff_delay_for_all(addresses)
             if all_backoff_delay > 0:
+                await self._set_classic_page_scan(False)
                 wait_time = min(
                     all_backoff_delay,
                     self.CLASSIC_BACKOFF_POLL_INTERVAL,
@@ -267,6 +264,7 @@ class ClassicMixin:
                 await asyncio.sleep(wait_time)
                 continue
 
+            await self._set_classic_page_scan(True)
             for addr in addresses:
                 if self._is_protocol_connected(Protocol.CLASSIC):
                     return
@@ -345,6 +343,19 @@ class ClassicMixin:
                 return 0.0
             delays.append(delay)
         return min(delays) if delays else 0.0
+
+    async def _set_classic_page_scan(self, enabled: bool):
+        """Enable passive Classic accepts, or quiet them during flap backoff."""
+        if self._classic_page_scan_enabled == enabled:
+            return
+        scan_enable = 0x02 if enabled else 0x00
+        action = "Enabling" if enabled else "Disabling"
+        log.info(f"[Classic] {action} Page Scan...")
+        await self.device.host.send_command(
+            HCI_Write_Scan_Enable_Command(scan_enable=scan_enable),
+            check_result=True
+        )
+        self._classic_page_scan_enabled = enabled
 
     def _classic_set_report_protocol(self, session=None):
         """Send HIDP SET_PROTOCOL(Report) on the control channel."""

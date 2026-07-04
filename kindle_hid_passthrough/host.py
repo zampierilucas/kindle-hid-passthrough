@@ -111,6 +111,7 @@ class HIDHost(ClassicMixin, BLEMixin):
         self._classic_retry_not_before = 0.0
         self._classic_flap_counts: dict[str, int] = {}
         self._classic_flap_until: dict[str, float] = {}
+        self._classic_page_scan_enabled = False
         self.last_pair_error = None
         self._radio_lock = None
 
