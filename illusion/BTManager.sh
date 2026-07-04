@@ -10,11 +10,16 @@ APP_DIR="/mnt/us/kindle_hid_passthrough/illusion/BTManager"
 BINARY="/mnt/us/kindle_hid_passthrough/kindle-hid-passthrough"
 LD_PROCESS="ld-linux-armhf."
 APPREG_DB="/var/local/appreg.db"
+RUNNER="/mnt/us/kindle_hid_passthrough/scripts/run-daemon-pw4.sh"
 
 # ---- Helpers ----
 
 log_msg() {
     logger -t btmanager "$1"
+}
+
+has_uhid() {
+    [ -e /dev/uhid ]
 }
 
 alert() {
@@ -59,13 +64,18 @@ EOF
 
 start_helper() {
     if pgrep -f "$LD_PROCESS" >/dev/null 2>&1 || pgrep -f 'main.py --daemon' >/dev/null 2>&1; then
-        log_msg "Daemon already running"
-        return
+        if has_uhid; then
+            log_msg "Daemon already running"
+            return
+        fi
+        log_msg "Daemon running without /dev/uhid; restarting helper"
+        pkill -f "$LD_PROCESS" 2>/dev/null || true
+        sleep 2
     fi
 
     if [ -f "$BINARY" ]; then
         log_msg "Starting daemon"
-        "$BINARY" --daemon >/dev/null 2>&1 &
+        "$RUNNER" >/dev/null 2>&1 &
         sleep 1
         log_msg "Daemon started"
     else

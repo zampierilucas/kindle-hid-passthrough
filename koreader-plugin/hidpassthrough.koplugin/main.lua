@@ -50,6 +50,8 @@ local HIDPassthrough = WidgetContainer:extend{
     -- Defaults matching the upstream project layout. Override in
     -- settings/hidpassthrough.lua if your install lives elsewhere.
     DAEMON_BINARY = "/mnt/us/kindle_hid_passthrough/kindle-hid-passthrough",
+    DAEMON_RUNNER = "/mnt/us/kindle_hid_passthrough/scripts/run-daemon-pw4.sh",
+    DAEMON_CONTROL = "/mnt/us/kindle_hid_passthrough/scripts/hid-passthrough-daemon.sh",
     API_HOST      = "127.0.0.1",
     API_PORT      = 8321,
     API_TIMEOUT   = 2, -- seconds
@@ -124,10 +126,12 @@ end
 --
 -- The user-facing checkmark is true only for "on".
 
--- How long to wait for the daemon to come up before giving up. The bundled
--- Python interpreter + bumble import can easily take 5-10s on first start.
-HIDPassthrough.START_TIMEOUT = 15
+-- How long to wait for the daemon to come up before giving up. On some
+-- Broadcom-era Kindles the Python + Bluetooth stack init can take well over
+-- 15s after a clean restart, so keep this generous to avoid false failures.
+HIDPassthrough.START_TIMEOUT = 30
 HIDPassthrough.STOP_TIMEOUT = 5
+HIDPassthrough.REPAIR_TIMEOUT = 15
 
 -- Returns state, body where state is "off" / "api_only" / "on".
 function HIDPassthrough:getState()
@@ -144,6 +148,374 @@ end
 
 function HIDPassthrough:isRunning()
     return self:getState() == "on"
+end
+
+local function statusHasField(body, key)
+    if not body then return false end
+    local value = body:match('"' .. key .. '"%s*:%s*(%b[])')
+    if value then
+        return value ~= "[]"
+    end
+    value = body:match('"' .. key .. '"%s*:%s*"([^"]*)"')
+    return value ~= nil and value ~= ""
+end
+
+function HIDPassthrough:_statusHasUsableInput(body)
+    return statusHasField(body, "uhid_name") or statusHasField(body, "input_paths")
+end
+
+function HIDPassthrough:_statusLooksHalfStuck(body)
+    if not body then return false end
+    if body:find('"scanning"%s*:%s*true') and not body:find('"daemon_running"%s*:%s*true') then
+        return true
+    end
+    if statusHasField(body, "connected_device") and not self:_statusHasUsableInput(body) then
+        return true
+    end
+    return false
+end
+
+function HIDPassthrough:_runControl(action)
+    if not util.pathExists(self.DAEMON_CONTROL) then
+        return false, _("Daemon control script not found.")
+    end
+    local cmd = string.format("%s %s >/dev/null 2>&1", self.DAEMON_CONTROL, action)
+    logger.info("HIDPassthrough: control script:", cmd)
+    os.execute(cmd)
+    return true
+end
+
+function HIDPassthrough:_runControlDetached(action)
+    if not util.pathExists(self.DAEMON_CONTROL) then
+        return false, _("Daemon control script not found.")
+    end
+    local cmd = string.format(
+        "(setsid sh -c '%s %s >/dev/null 2>&1' </dev/null >/dev/null 2>&1 &) 2>/dev/null || "
+        .. "(sh -c '%s %s >/dev/null 2>&1' </dev/null >/dev/null 2>&1 &)",
+        self.DAEMON_CONTROL, action,
+        self.DAEMON_CONTROL, action
+    )
+    logger.info("HIDPassthrough: detached control script:", cmd)
+    os.execute(cmd)
+    return true
+end
+
+function HIDPassthrough:_runShellDetached(shell_cmd)
+    local cmd = string.format(
+        "(setsid sh -c '%s' </dev/null >/dev/null 2>&1 &) 2>/dev/null || "
+        .. "(sh -c '%s' </dev/null >/dev/null 2>&1 &)",
+        shell_cmd, shell_cmd
+    )
+    logger.info("HIDPassthrough: detached shell command:", cmd)
+    os.execute(cmd)
+    return true
+end
+
+function HIDPassthrough:getStatusData()
+    local data, err = self:_httpGetJson("/status")
+    if not data then
+        return nil, err
+    end
+    return data, nil
+end
+
+function HIDPassthrough:getConnectionState()
+    local daemon_state = self:getState()
+    if daemon_state == "off" then
+        return "daemon_off", nil
+    end
+
+    local data, err = self:getStatusData()
+    if not data then
+        return "idle", nil, err
+    end
+
+    if data.pairing then
+        return "pairing", data
+    end
+    if data.scanning then
+        return "scanning", data
+    end
+
+    local connected = data.connected_device
+    if connected ~= nil and connected ~= "" and tostring(connected) ~= "null" then
+        return "connected", data
+    end
+
+    return "idle", data
+end
+
+function HIDPassthrough:_waitForConnectedInput(addr, timeout)
+    timeout = timeout or self.REPAIR_TIMEOUT
+    for i = 1, timeout do
+        ffiutil.sleep(1)
+        local data = self:getStatusData()
+        if data and data.connected_device and data.connected_device ~= "" then
+            local same_addr = (not addr)
+                or tostring(data.connected_device):upper() == tostring(addr):upper()
+            local has_input = (data.uhid_name and data.uhid_name ~= "")
+                or (type(data.input_paths) == "table" and #data.input_paths > 0)
+            if same_addr and has_input then
+                logger.info("HIDPassthrough: connected keyboard gained input after", i, "ticks")
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function HIDPassthrough:_finishRepair(ok, msg, is_error)
+    self._repair_ctx = nil
+    if ok then
+        infoToast(msg or _("Keyboard input repaired"))
+    else
+        infoToast(msg or _("Repair failed"), is_error ~= false)
+    end
+end
+
+function HIDPassthrough:_restartWrapper()
+    if self._repair_ctx then
+        infoToast(_("Repair already in progress"), true)
+        return
+    end
+
+    infoToast(_("Restarting daemon wrapper…"))
+    self:_cancelPolls()
+    self:_stopKeyboardWatcher()
+    self._repair_ctx = {
+        mode = "wrapper",
+    }
+
+    local shell_cmd = table.concat({
+        self.DAEMON_CONTROL .. " stop >/dev/null 2>&1 || true",
+        "sleep 4",
+        self.DAEMON_CONTROL .. " start >/dev/null 2>&1",
+    }, "; ")
+    local ok, err = self:_runShellDetached(shell_cmd)
+    if not ok then
+        self:_finishRepair(false, T(_("Wrapper restart failed: %1"), err), true)
+        return
+    end
+    UIManager:scheduleIn(2, function() self:_pollForShellRecovery() end)
+end
+
+function HIDPassthrough:_radioResetWrapper()
+    if self._repair_ctx then
+        infoToast(_("Repair already in progress"), true)
+        return
+    end
+
+    infoToast(_("Resetting BLE radio (Wi-Fi will be turned off)…"))
+    self:_cancelPolls()
+    self:_stopKeyboardWatcher()
+    self._repair_ctx = {
+        mode = "radio",
+    }
+
+    local shell_cmd = table.concat({
+        "/usr/bin/lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1 || true",
+        "sleep 3",
+        self.DAEMON_CONTROL .. " stop >/dev/null 2>&1 || true",
+        "sleep 4",
+        self.DAEMON_CONTROL .. " start >/dev/null 2>&1",
+    }, "; ")
+
+    local ok, err = self:_runShellDetached(shell_cmd)
+    if not ok then
+        self:_finishRepair(false, T(_("Radio reset failed: %1"), err), true)
+        return
+    end
+
+    infoToast(_("BLE radio reset: Wi-Fi off requested. Restarting daemon…"))
+    UIManager:scheduleIn(2, function() self:_pollForShellRecovery() end)
+end
+
+function HIDPassthrough:_softRepairKeyboardInput(addr, proto)
+    if self._repair_ctx then
+        infoToast(_("Repair already in progress"), true)
+        return
+    end
+    if not addr or addr == "" then
+        infoToast(_("Soft repair needs a connected device."), true)
+        return
+    end
+
+    infoToast(_("Soft repair: reconnecting keyboard…"))
+    self:_cancelPolls()
+    self._repair_ctx = {
+        addr = addr,
+        proto = proto or "ble",
+        mode = "soft",
+    }
+
+    self:_httpGet("/disconnect?addr=" .. urlEncode(addr))
+    UIManager:scheduleIn(1, function()
+        if not self._repair_ctx then return end
+        self:_startKeyboardWatcher()
+        local url = "/connect?addr=" .. urlEncode(addr)
+            .. "&protocol=" .. urlEncode(self._repair_ctx.proto)
+        local data, cerr = self:_httpGetJson(url)
+        if not data then
+            self:_finishRepair(false, T(_("Soft repair reconnect error: %1"), tostring(cerr)), true)
+            return
+        end
+        if not data.ok then
+            self:_finishRepair(false, T(_("Soft repair failed: %1"), data.error or _("unknown")), true)
+            return
+        end
+        self:_repairPollForInput(addr, self.REPAIR_TIMEOUT)
+    end)
+end
+
+function HIDPassthrough:_repairPollForState(target, timeout, on_ok, on_fail)
+    local tick = 0
+    local function poll()
+        if not self._repair_ctx then return end
+        local state = self:getState()
+        if state == target then
+            on_ok()
+            return
+        end
+        tick = tick + 1
+        if tick >= timeout then
+            on_fail()
+            return
+        end
+        UIManager:scheduleIn(1, poll)
+    end
+    UIManager:scheduleIn(1, poll)
+end
+
+function HIDPassthrough:_repairPollForInput(addr, timeout)
+    local tick = 0
+    local function poll()
+        if not self._repair_ctx then return end
+        local data = self:getStatusData()
+        if data and data.connected_device and data.connected_device ~= "" then
+            local same_addr = (not addr)
+                or tostring(data.connected_device):upper() == tostring(addr):upper()
+            local has_input = (data.uhid_name and data.uhid_name ~= "")
+                or (type(data.input_paths) == "table" and #data.input_paths > 0)
+            if same_addr and has_input then
+                self:_finishRepair(true, _("Keyboard input repaired"))
+                return
+            end
+        end
+        tick = tick + 1
+        if tick >= timeout then
+            self:_finishRepair(false, _("Daemon recovered, but keyboard input is still missing."), true)
+            return
+        end
+        UIManager:scheduleIn(1, poll)
+    end
+    UIManager:scheduleIn(1, poll)
+end
+
+function HIDPassthrough:_repairPollForNotOn(timeout, on_ok, on_fail)
+    local tick = 0
+    local function poll()
+        if not self._repair_ctx then return end
+        local state = self:getState()
+        if state ~= "on" then
+            on_ok(state)
+            return
+        end
+        tick = tick + 1
+        if tick >= timeout then
+            on_fail()
+            return
+        end
+        UIManager:scheduleIn(1, poll)
+    end
+    UIManager:scheduleIn(1, poll)
+end
+
+function HIDPassthrough:_pollForShellRecovery()
+    local tick = 0
+    local timeout = self.START_TIMEOUT + 12
+    local function poll()
+        if not self._repair_ctx then return end
+        local state = self:getState()
+        if state == "on" then
+            self:_startKeyboardWatcher()
+            if self._repair_ctx.mode == "radio" then
+                self:_finishRepair(true, _("BLE radio reset complete. Wi-Fi remains off."))
+            else
+                self:_finishRepair(true, _("Daemon wrapper restarted."))
+            end
+            return
+        end
+        tick = tick + 1
+        if tick >= timeout then
+            if self._repair_ctx.mode == "radio" then
+                self:_finishRepair(false, _("BLE radio reset did not recover within timeout."), true)
+            else
+                self:_finishRepair(false, _("Wrapper restart did not recover within timeout."), true)
+            end
+            return
+        end
+        UIManager:scheduleIn(1, poll)
+    end
+    UIManager:scheduleIn(1, poll)
+end
+
+function HIDPassthrough:_repairStartPhase()
+    if not self._repair_ctx then return end
+    local ok, err = self:_runControlDetached("start")
+    if not ok then
+        self:_finishRepair(false, T(_("Repair failed: %1"), err), true)
+        return
+    end
+
+    self:_repairPollForState("on", self.START_TIMEOUT, function()
+        if not self._repair_ctx then return end
+        self:_startKeyboardWatcher()
+        local addr = self._repair_ctx.addr
+        local proto = self._repair_ctx.proto or "ble"
+        local mode = self._repair_ctx.mode
+        if not addr or addr == "" then
+            if mode == "wrapper" then
+                self:_finishRepair(true, _("Daemon wrapper restarted."))
+            else
+                self:_finishRepair(true, _("Daemon repaired. Reconnect the keyboard once."))
+            end
+            return
+        end
+        local url = "/connect?addr=" .. urlEncode(addr)
+            .. "&protocol=" .. urlEncode(proto)
+        local data, cerr = self:_httpGetJson(url)
+        if not data then
+            self:_finishRepair(false, T(_("Reconnect error: %1"), tostring(cerr)), true)
+            return
+        end
+        if not data.ok then
+            self:_finishRepair(false, T(_("Reconnect failed: %1"), data.error or _("unknown")), true)
+            return
+        end
+        self:_repairPollForInput(addr, self.REPAIR_TIMEOUT)
+    end, function()
+        self:_finishRepair(false, _("Repair failed: daemon did not come back."), true)
+    end)
+end
+
+function HIDPassthrough:_repairStopPhase()
+    if not self._repair_ctx then return end
+    local ok, err = self:_runControlDetached("stop")
+    if not ok then
+        self:_finishRepair(false, T(_("Repair failed: %1"), err), true)
+        return
+    end
+
+    self:_repairPollForState("off", self.STOP_TIMEOUT + 3, function()
+        self:_repairStartPhase()
+    end, function()
+        local state = self:getState()
+        if state ~= "on" then
+            self:_repairStartPhase()
+        else
+            self:_finishRepair(false, _("Repair failed: daemon would not stop."), true)
+        end
+    end)
 end
 
 ------------------------------------------------------------------------------
@@ -463,10 +835,14 @@ function HIDPassthrough:_spawnBinary()
     -- Detached background launch via setsid so it survives KOReader exiting.
     -- The exit code of this command is meaningless: the subshell backgrounds
     -- the process and returns immediately.
+    local binary = self.DAEMON_RUNNER
+    if not util.pathExists(binary) then
+        binary = self.DAEMON_BINARY
+    end
     local cmd = string.format(
-        "(setsid %s --daemon </dev/null >/dev/null 2>&1 &) 2>/dev/null || "
-        .. "(%s --daemon </dev/null >/dev/null 2>&1 &)",
-        self.DAEMON_BINARY, self.DAEMON_BINARY
+        "(setsid %s </dev/null >/dev/null 2>&1 &) 2>/dev/null || "
+        .. "(%s </dev/null >/dev/null 2>&1 &)",
+        binary, binary
     )
     logger.info("HIDPassthrough: spawning daemon:", cmd)
     os.execute(cmd)
@@ -487,7 +863,7 @@ function HIDPassthrough:_waitForState(target, timeout)
 end
 
 function HIDPassthrough:start()
-    local state = self:getState()
+    local state, body = self:getState()
 
     if state == "on" then
         -- Daemon already running. Still make sure the watcher is going, in
@@ -497,7 +873,7 @@ function HIDPassthrough:start()
         return true, _("HID Passthrough daemon is already running.")
     end
 
-    local ok, msg = self:_doStart(state)
+    local ok, msg = self:_doStart(state, body)
     if ok then
         self:_startKeyboardWatcher()
     end
@@ -506,7 +882,7 @@ end
 
 -- The original start logic, factored out so start() can wrap it with input
 -- device tracking.
-function HIDPassthrough:_doStart(state)
+function HIDPassthrough:_doStart(state, body)
     if state == "off" then
         -- API server not up. Spawn the binary, which brings up both layers.
         local ok, err = self:_spawnBinary()
@@ -531,6 +907,20 @@ function HIDPassthrough:_doStart(state)
         return false, T(_("API server is up but the HID daemon would not start "
             .. "within %1 seconds. Check /var/log/hid_passthrough.log."),
             tostring(self.START_TIMEOUT))
+    end
+
+    -- state == "api_only": usually just ask the API server to start the
+    -- daemon. But when the API looks half-stuck, a full wrapper restart is
+    -- more reliable than /start.
+    if self:_statusLooksHalfStuck(body) and util.pathExists(self.DAEMON_CONTROL) then
+        logger.warn("HIDPassthrough: detected half-stuck API state, forcing control-script restart")
+        self:_runControlDetached("stop")
+        ffiutil.sleep(2)
+        self:_runControlDetached("start")
+        if self:_waitForState("on", self.START_TIMEOUT) then
+            return true, _("HID Passthrough daemon restarted.")
+        end
+        return false, _("Daemon was restarted, but did not recover within timeout.")
     end
 
     -- state == "api_only": just ask the API server to start the daemon.
@@ -576,6 +966,22 @@ function HIDPassthrough:stop()
         end
         logger.dbg("HIDPassthrough: waiting for stop, tick", i)
     end
+
+    -- Some Kindle builds keep the API responsive but fail to tear down the
+    -- HID layer via /stop. Fall back to the shell control script, which
+    -- forcefully cleans up lingering loader processes when needed.
+    if util.pathExists(self.DAEMON_CONTROL) then
+        local cmd = string.format("%s stop >/dev/null 2>&1", self.DAEMON_CONTROL)
+        logger.warn("HIDPassthrough: /stop timed out, falling back to:", cmd)
+        self:_runControlDetached("stop")
+        for i = 1, self.STOP_TIMEOUT do
+            ffiutil.sleep(1)
+            if self:getState() ~= "on" then
+                return true, _("HID Passthrough daemon stopped.")
+            end
+        end
+    end
+
     return false, _("Daemon did not stop within timeout.")
 end
 
@@ -665,6 +1071,90 @@ local function urlEncode(s)
     return (tostring(s):gsub("[^%w%-_.~]", function(c)
         return string.format("%%%02X", string.byte(c))
     end))
+end
+
+function HIDPassthrough:_repairKeyboardInput(addr, proto)
+    if self._repair_ctx then
+        infoToast(_("Repair already in progress"), true)
+        return
+    end
+    infoToast(_("Full repair started. KOReader may restart."))
+    self:_cancelPolls()
+    self:_stopKeyboardWatcher()
+    self._repair_ctx = {
+        addr = addr,
+        proto = proto,
+        mode = "full",
+    }
+
+    if addr and addr ~= "" then
+        self:_httpGet("/disconnect?addr=" .. urlEncode(addr))
+    end
+    UIManager:scheduleIn(1, function() self:_repairStopPhase() end)
+end
+
+function HIDPassthrough:toggleConnection()
+    local conn_state, data = self:getConnectionState()
+
+    if conn_state == "daemon_off" then
+        local ok, msg = self:start()
+        if not ok then
+            return false, msg
+        end
+        conn_state, data = self:getConnectionState()
+    end
+
+    if conn_state == "scanning" then
+        return true, _("Already scanning for HID devices.")
+    end
+    if conn_state == "pairing" then
+        return true, _("Already pairing a HID device.")
+    end
+
+    if conn_state == "connected" then
+        local addr = data and data.connected_device
+        if not addr or addr == "" or tostring(addr) == "null" then
+            return false, _("Connected device address unavailable.")
+        end
+        local res, err = self:_httpGetJson("/disconnect?addr=" .. urlEncode(addr))
+        if not res then
+            return false, T(_("Disconnect error: %1"), tostring(err))
+        end
+        if res.ok then
+            return true, _("Disconnected")
+        end
+        return false, T(_("Disconnect failed: %1"), res.error or _("unknown"))
+    end
+
+    local devices = data and data.devices or {}
+    if #devices == 1 then
+        local dev = devices[1]
+        local addr = dev and dev.address
+        if not addr or addr == "" then
+            return false, _("Paired device address unavailable.")
+        end
+        local url = "/connect?addr=" .. urlEncode(addr)
+        local proto = dev.protocol or "ble"
+        if proto ~= "" then
+            url = url .. "&protocol=" .. urlEncode(proto)
+        end
+        local res, err = self:_httpGetJson(url)
+        if not res then
+            return false, T(_("Connect error: %1"), tostring(err))
+        end
+        if res.ok then
+            return true, _("Connect requested")
+        end
+        return false, T(_("Connect failed: %1"), res.error or _("unknown"))
+    end
+
+    if #devices > 1 then
+        self:showPairedDevices()
+        return true, _("Choose a paired device.")
+    end
+
+    self:scanForDevices()
+    return true, _("Scanning for HID devices…")
 end
 
 function HIDPassthrough:_cancelPolls()
@@ -918,6 +1408,40 @@ function HIDPassthrough:_showDeviceActions(addr, proto, name, is_connected)
                 self:_disconnectDevice(addr)
             end,
         })
+        table.insert(items, {
+            text = _("Soft repair keyboard"),
+            callback = function()
+                UIManager:close(self._action_menu)
+                self._action_menu = nil
+                self:_softRepairKeyboardInput(addr, proto)
+            end,
+        })
+        table.insert(items, {
+            text = _("Full repair keyboard"),
+            callback = function()
+                UIManager:close(self._action_menu)
+                self._action_menu = nil
+                UIManager:show(ConfirmBox:new{
+                    text = _("Full repair restarts the Bluetooth stack and may restart KOReader. Continue?"),
+                    ok_text = _("Run full repair"),
+                    ok_callback = function()
+                        self:_repairKeyboardInput(addr, proto)
+                    end,
+                })
+            end,
+        })
+        table.insert(items, {
+            text = _("Remove (forget)"),
+            callback = function()
+                UIManager:close(self._action_menu)
+                self._action_menu = nil
+                UIManager:show(ConfirmBox:new{
+                    text = T(_("Remove device %1?"), addr),
+                    ok_text = _("Remove"),
+                    ok_callback = function() self:_removeDevice(addr) end,
+                })
+            end,
+        })
     else
         table.insert(items, {
             text = _("Connect"),
@@ -928,18 +1452,20 @@ function HIDPassthrough:_showDeviceActions(addr, proto, name, is_connected)
             end,
         })
     end
-    table.insert(items, {
-        text = _("Remove (forget)"),
-        callback = function()
-            UIManager:close(self._action_menu)
-            self._action_menu = nil
-            UIManager:show(ConfirmBox:new{
-                text = T(_("Remove device %1?"), addr),
-                ok_text = _("Remove"),
-                ok_callback = function() self:_removeDevice(addr) end,
-            })
-        end,
-    })
+    if not is_connected then
+        table.insert(items, {
+            text = _("Remove (forget)"),
+            callback = function()
+                UIManager:close(self._action_menu)
+                self._action_menu = nil
+                UIManager:show(ConfirmBox:new{
+                    text = T(_("Remove device %1?"), addr),
+                    ok_text = _("Remove"),
+                    ok_callback = function() self:_removeDevice(addr) end,
+                })
+            end,
+        })
+    end
 
     local menu
     menu = Menu:new{
@@ -1202,11 +1728,67 @@ function HIDPassthrough:addToMainMenu(menu_items)
                 end,
             },
             {
+                text = _("Start daemon"),
+                enabled_func = function() return not self:isRunning() end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    local ok, msg = self:start()
+                    UIManager:show(InfoMessage:new{
+                        text = msg,
+                        timeout = ok and 2 or 4,
+                    })
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
+                end,
+            },
+            {
+                text = _("Stop daemon"),
+                enabled_func = function() return self:isRunning() end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    local ok, msg = self:stop()
+                    UIManager:show(InfoMessage:new{
+                        text = msg,
+                        timeout = ok and 2 or 4,
+                    })
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
+                end,
+            },
+            {
+                text = _("Restart daemon wrapper"),
+                keep_menu_open = true,
+                callback = function()
+                    UIManager:show(ConfirmBox:new{
+                        text = _("Restart the HID wrapper using the same stop/start sequence as the working SSH recovery?"),
+                        ok_text = _("Restart wrapper"),
+                        ok_callback = function()
+                            self:_restartWrapper()
+                        end,
+                    })
+                end,
+            },
+            {
+                text = _("Radio reset for BLE"),
+                keep_menu_open = true,
+                callback = function()
+                    UIManager:show(ConfirmBox:new{
+                        text = _("Turn Wi-Fi off, then restart the HID wrapper? Use this when BLE is stuck on HCI reset timeouts. Wi-Fi will remain off."),
+                        ok_text = _("Reset radio"),
+                        ok_callback = function()
+                            self:_radioResetWrapper()
+                        end,
+                    })
+                end,
+                separator = true,
+            },
+            {
                 text = _("Scan for devices"),
                 enabled_func = function() return self:isRunning() end,
                 keep_menu_open = true,
                 callback = function() self:scanForDevices() end,
-                separator = true,
             },
             {
                 text = _("Paired devices"),
