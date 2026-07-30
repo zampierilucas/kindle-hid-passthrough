@@ -23,23 +23,7 @@ deploy:
     @echo "Remounting filesystems as writable..."
     ssh {{host}} "/usr/sbin/mntroot rw && mount -o remount,rw /mnt/base-us"
     @echo "Copying all files via tar pipe..."
-    (cd {{src_dir}} && tar cf - \
-        --transform='s|^kindle_hid_passthrough/hid-passthrough-dev.upstart|etc/upstart/hid-passthrough.conf|' \
-        --transform='s|^kindle_hid_passthrough/|mnt/us/kindle_hid_passthrough/|' \
-        --transform='s|^assets/99-hid-keyboard.rules|etc/udev/rules.d/99-hid-keyboard.rules|' \
-        --transform='s|^scripts/dev_is_keyboard.sh|mnt/us/kindle_hid_passthrough/scripts/dev_is_keyboard.sh|' \
-        --transform='s|^illusion/BTManager/|mnt/us/kindle_hid_passthrough/illusion/BTManager/|' \
-        --transform='s|^illusion/BTManager.sh|mnt/us/kindle_hid_passthrough/illusion/BTManager.sh|' \
-        kindle_hid_passthrough/*.py \
-        kindle_hid_passthrough/config.ini \
-        kindle_hid_passthrough/BUILD_SHA \
-        kindle_hid_passthrough/hid-passthrough-dev.upstart \
-        kindle_hid_passthrough/modules/*.ko \
-        assets/99-hid-keyboard.rules \
-        scripts/dev_is_keyboard.sh \
-        illusion/BTManager/* \
-        illusion/BTManager.sh \
-    ) | ssh {{host}} "tar xf - -C /"
+    @just host={{host}} push-files
     -ssh {{host}} "udevadm control --reload-rules" 2>/dev/null || true
     @echo "Clearing Python bytecode cache..."
     ssh {{host}} "rm -rf {{remote_dir}}/__pycache__"
@@ -52,6 +36,44 @@ deploy:
     @just host={{host}} server
     ssh {{host}} 'lipc-set-prop com.lab126.appmgrd start app://com.lzampier.btmanager'
     @echo "Deployment complete!"
+
+# Ship the tree with one tar per destination.
+#
+# The old form rewrote paths with GNU tar's --transform. macOS ships bsdtar, which
+# rejects the option and writes nothing, so the remote tar failed on the empty
+# stream and just stopped at that line: loud, but it made deploy unusable on macOS.
+#
+# Files are named individually rather than by directory so that no archive carries
+# a directory member. A member for etc/ or mnt/ would, on extraction as root, reset
+# the mode and ownership of the device's real /etc and /mnt to the build host's.
+#
+# Runs under pipefail. A local tar error (an unmatched glob, an unreadable file)
+# still yields a valid archive that the remote tar extracts happily and exits 0 on,
+# so without pipefail a partial deploy would report success.
+[private]
+push-files:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Every -C target must exist: unlike "-C /", tar will not create a parent that
+    # is not itself a member of the archive.
+    ssh {{host}} "mkdir -p {{remote_dir}}/scripts {{remote_dir}}/modules \
+        {{remote_dir}}/illusion/BTManager /etc/upstart /etc/udev/rules.d"
+    (cd {{src_dir}}/kindle_hid_passthrough && tar cf - *.py config.ini BUILD_SHA modules/*.ko) \
+        | ssh {{host}} "tar xf - -C {{remote_dir}}"
+    (cd {{src_dir}}/scripts && tar cf - dev_is_keyboard.sh) \
+        | ssh {{host}} "tar xf - -C {{remote_dir}}/scripts"
+    (cd {{src_dir}}/illusion && tar cf - BTManager.sh BTManager/*) \
+        | ssh {{host}} "tar xf - -C {{remote_dir}}/illusion"
+    (cd {{src_dir}}/assets && tar cf - 99-hid-keyboard.rules) \
+        | ssh {{host}} "tar xf - -C /etc/udev/rules.d"
+    # The upstart conf is the one file renamed in transit. Stage it under its
+    # destination name so the archive holds that single member and no directory.
+    stage=$(mktemp -d)
+    trap 'rm -r "$stage"' EXIT
+    name=$(basename '{{upstart_conf}}')
+    cp {{src_dir}}/kindle_hid_passthrough/hid-passthrough-dev.upstart "$stage/$name"
+    (cd "$stage" && tar cf - "$name") \
+        | ssh {{host}} "tar xf - -C $(dirname '{{upstart_conf}}')"
 
 # Register BTManager WAF app in appreg.db and install scriptlet (idempotent)
 register-waf:
@@ -70,16 +92,20 @@ register-waf:
 
 # Kill daemon and close WAF app
 kill:
+    # The patterns are bracket-escaped so they do not match this ssh command's own
+    # shell, whose cmdline contains them verbatim. Unescaped, the first pkill
+    # SIGKILLs that shell and every later command in the list silently never runs.
     -ssh {{host}} 'lipc-set-prop com.lab126.appmgrd start app://com.lab126.booklet.home 2>/dev/null; \
         /sbin/initctl stop hid-passthrough 2>/dev/null; \
-        pkill -9 -f "main.py --daemon" 2>/dev/null; \
-        pkill -9 -f daemon.py 2>/dev/null; \
+        pkill -9 -f "main[.]py --daemon" 2>/dev/null; \
+        pkill -9 -f "daemon[.]py" 2>/dev/null; \
+        pkill -f "mesquite -l com[.]lzampier[.]btmanager" 2>/dev/null; \
         true'
     @echo "All processes stopped."
 
 # Start daemon + API server
 server:
-    -ssh {{host}} "pkill -9 -f 'main.py --daemon'" 2>/dev/null || true
+    -ssh {{host}} "pkill -9 -f 'main[.]py --daemon'" 2>/dev/null || true
     ssh {{host}} "sleep 2 && /mnt/us/python3.10-kindle/python3-wrapper.sh /mnt/us/kindle_hid_passthrough/main.py --daemon > /dev/null 2>&1 &"
     @echo "Daemon + API starting (takes ~8s on Kindle)."
 
@@ -167,10 +193,9 @@ run:
 deploy-koreader:
     @echo "Deploying KOReader plugin..."
     ssh {{host}} "rm -rf /mnt/us/koreader/plugins/hidpassthrough.koplugin"
-    (cd {{src_dir}} && tar cf - \
-        --transform='s|^koreader-plugin/hidpassthrough.koplugin/|mnt/us/koreader/plugins/hidpassthrough.koplugin/|' \
-        koreader-plugin/hidpassthrough.koplugin/ \
-    ) | ssh {{host}} "tar xf - -C /"
+    ssh {{host}} "mkdir -p /mnt/us/koreader/plugins"
+    (cd {{src_dir}}/koreader-plugin && tar cf - hidpassthrough.koplugin) \
+        | ssh {{host}} "tar xf - -C /mnt/us/koreader/plugins"
     @echo "KOReader plugin deployed!"
 
 # Remove autostart (removes upstart config)
