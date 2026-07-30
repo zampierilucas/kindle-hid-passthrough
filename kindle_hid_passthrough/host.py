@@ -8,6 +8,7 @@ from typing import List, Optional
 from bumble.core import InvalidStateError
 from bumble.hci import HCI_LE_SET_PRIVACY_MODE_COMMAND, HCI_LE_Set_Privacy_Mode_Command, HCI_Write_Class_Of_Device_Command, HCI_Write_Local_Name_Command
 
+import keep_awake
 from ble import BLEMixin
 from bt_setup import ensure_uhid
 from classic import ClassicMixin
@@ -339,6 +340,8 @@ class HIDHost(ClassicMixin, BLEMixin):
         if data != self._last_report:
             log.debug(f"Report: {data.hex()}")
             self._last_report = data
+            # Changed reports only, so a stick parked at rest can't pin the screen on.
+            keep_awake.on_activity()
         if self.uhid_device:
             try:
                 self.uhid_device.send_input(data)
