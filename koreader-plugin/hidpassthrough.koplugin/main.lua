@@ -563,6 +563,201 @@ function HIDPassthrough:genKeyActionMenu(id)
     return sub_items
 end
 
+------------------------------------------------------------------------------
+-- Button Mapper frontend
+------------------------------------------------------------------------------
+-- Gamepads and remotes are the mapper's job (it grabs them and emits plain
+-- keys), so their mappings are edited in its config over its helper API
+-- rather than in KOReader's event path.
+
+function HIDPassthrough:_mapper()
+    if not self._mapper_client then
+        self._mapper_client = dofile(self.path .. "/mapper.lua")
+    end
+    return self._mapper_client
+end
+
+function HIDPassthrough:genMapperMenu()
+    local mapper = self:_mapper()
+    if not mapper.installed() then
+        return {{ text = _("Button Mapper is not installed"), enabled = false }}
+    end
+    local ok, err = mapper.ensureHelper()
+    if not ok then
+        return {{ text = T(_("Button Mapper unreachable: %1"), tostring(err)), enabled = false }}
+    end
+    local text = mapper.getConfig()
+    if not text then
+        return {{ text = _("Could not read the Button Mapper config"), enabled = false }}
+    end
+
+    local items = {}
+    for dummy, dev in ipairs(mapper.deviceBlocks(text)) do -- luacheck: ignore dummy
+        table.insert(items, {
+            text = dev.name or dev.id,
+            sub_item_table_func = function() return self:genMapperDeviceMenu(dev) end,
+        })
+    end
+    if #items == 0 then
+        table.insert(items, {
+            text = _("No devices registered yet. Pair one first."),
+            enabled = false,
+        })
+    end
+    return items
+end
+
+local MAPPER_KINDS = {
+    { section = "buttons",  label = _("Button") },
+    { section = "dpad",     label = _("D-pad") },
+    { section = "triggers", label = _("Trigger") },
+}
+
+function HIDPassthrough:genMapperDeviceMenu(dev)
+    local mapper = self:_mapper()
+    local items = {
+        {
+            text = _("Map a button…"),
+            keep_menu_open = true,
+            callback = function() self:mapperCapture(dev) end,
+            separator = true,
+        },
+    }
+
+    local text = mapper.getConfig() or ""
+    for dummy, kind in ipairs(MAPPER_KINDS) do -- luacheck: ignore dummy
+        local section = "device." .. dev.id .. "." .. kind.section
+        for dummy2, entry in ipairs(mapper.sectionKeys(text, section)) do -- luacheck: ignore dummy2
+            -- The script path is noise, show "koreader.sh next_page".
+            local action = entry.value:match("([^/]+)$") or entry.value
+            table.insert(items, {
+                text = T("%1 %2  →  %3", kind.label, entry.key, action),
+                keep_menu_open = true,
+                hold_callback = function(touchmenu_instance)
+                    UIManager:show(ConfirmBox:new{
+                        text = T(_("Remove the mapping for %1 %2?"), kind.label, entry.key),
+                        ok_text = _("Remove"),
+                        ok_callback = function()
+                            self:mapperEdit(function(cur)
+                                return mapper.removeKey(cur, section, entry.key)
+                            end)
+                            if touchmenu_instance then
+                                touchmenu_instance.item_table = self:genMapperDeviceMenu(dev)
+                                touchmenu_instance:updateItems()
+                            end
+                        end,
+                    })
+                end,
+                ignored_by_menu_search = true,
+            })
+        end
+    end
+
+    if #items == 1 then
+        table.insert(items, {
+            text = _("(defaults active — map a button to customize)"),
+            enabled = false,
+        })
+    end
+    items.refresh_func = function() return self:genMapperDeviceMenu(dev) end
+    return items
+end
+
+-- Re-fetch, transform, write back, reload. The helper serializes writers, but
+-- editing a stale text would still drop someone else's change, so keep the
+-- window small by fetching right before the edit.
+function HIDPassthrough:mapperEdit(transform)
+    local mapper = self:_mapper()
+    local text = mapper.getConfig()
+    if not text then
+        UIManager:show(InfoMessage:new{ text = _("Could not read the Button Mapper config.") })
+        return false
+    end
+    local ok, err = mapper.setConfig(transform(text))
+    if not ok then
+        UIManager:show(InfoMessage:new{ text = T(_("Saving failed: %1"), tostring(err)) })
+        return false
+    end
+    mapper.reload()
+    return true
+end
+
+function HIDPassthrough:mapperCapture(dev)
+    local mapper = self:_mapper()
+    local node = mapper.findNode(dev.uniq or "")
+    if not node then
+        UIManager:show(InfoMessage:new{
+            text = T(_("%1 is not connected."), dev.name or dev.id),
+        })
+        return
+    end
+
+    local msg = InfoMessage:new{
+        text = _("Press a button or D-pad direction on the controller…"),
+    }
+    UIManager:show(msg)
+    -- Painted first; the capture request then blocks the UI until a press
+    -- or the helper's timeout.
+    UIManager:scheduleIn(0.1, function()
+        local cap, err = mapper.capture(node, 8000)
+        UIManager:close(msg)
+        if not cap then
+            UIManager:show(InfoMessage:new{
+                text = T(_("Nothing captured: %1"), tostring(err or "timeout")),
+                timeout = 3,
+            })
+            return
+        end
+        local section, key, label = mapper.captureTarget(dev.id, cap)
+        if not section then
+            UIManager:show(InfoMessage:new{
+                text = _("That input isn't mappable here."),
+                timeout = 3,
+            })
+            return
+        end
+        self:mapperPickAction(section, key, label)
+    end)
+end
+
+function HIDPassthrough:mapperPickAction(section, key, label)
+    local mapper = self:_mapper()
+    local actions = mapper.actions()
+    if not actions then
+        UIManager:show(InfoMessage:new{ text = _("Could not fetch the action list.") })
+        return
+    end
+
+    local menu
+    local items = {}
+    for dummy, action in ipairs(actions) do -- luacheck: ignore dummy
+        table.insert(items, {
+            text = T("%1  (%2)", action.label, action.kind),
+            callback = function()
+                UIManager:close(menu)
+                if self:mapperEdit(function(cur)
+                    return mapper.setKey(cur, section, key, mapper.actionScript(action))
+                end) then
+                    UIManager:show(InfoMessage:new{
+                        text = T(_("Mapped %1 to %2."), label, action.label),
+                        timeout = 3,
+                    })
+                end
+            end,
+        })
+    end
+
+    menu = Menu:new{
+        title = T(_("Action for %1"), label),
+        item_table = items,
+        width = Screen:getWidth(),
+        height = Screen:getHeight(),
+        is_popout = false,
+        onClose = function() UIManager:close(menu) end,
+    }
+    UIManager:show(menu)
+end
+
 function HIDPassthrough:onFlushSettings()
     if self.updated then
         getKeymapSettings():flush()
@@ -1373,6 +1568,11 @@ function HIDPassthrough:addToMainMenu(menu_items)
                 text = _("Key mappings"),
                 keep_menu_open = true,
                 sub_item_table_func = function() return self:genKeymapMenu() end,
+            },
+            {
+                text = _("Button mappings (gamepads)"),
+                keep_menu_open = true,
+                sub_item_table_func = function() return self:genMapperMenu() end,
                 separator = true,
             },
             {
