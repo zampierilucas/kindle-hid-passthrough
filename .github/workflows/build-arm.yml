@@ -88,6 +88,24 @@ jobs:
           cp -r koreader-plugin/ output/
           cp kindle_hid_passthrough/config.ini output/
 
+      # Pinned rather than tracking latest, so a mapper release can't change
+      # what this tarball ships without a commit here.
+      - name: Bundle kindle-button-mapper
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KBM_VERSION: v1.4.1
+        run: |
+          mkdir -p output/button-mapper
+          gh release download "$KBM_VERSION" \
+            --repo zampierilucas/kindle-button-mapper-rs \
+            --pattern 'kindle-button-mapper-armv7.tar.gz' \
+            --output /tmp/kbm.tar.gz
+          tar -xzf /tmp/kbm.tar.gz -C output/button-mapper
+          echo "$KBM_VERSION" > output/button-mapper/VERSION
+          chmod +x output/button-mapper/kindle-button-mapper \
+                   output/button-mapper/install.sh \
+                   output/button-mapper/uninstall.sh
+
       - name: Show contents
         run: |
           echo "=== Top level ==="
@@ -116,7 +134,10 @@ jobs:
             koreader-plugin/hidpassthrough.koplugin/_meta.lua \
             koreader-plugin/hidpassthrough.koplugin/event_map_extra.lua \
             config.ini \
-            dist/main.bin; do
+            dist/main.bin \
+            button-mapper/kindle-button-mapper \
+            button-mapper/install.sh \
+            button-mapper/config.ini; do
             if ! tar -tzf kindle-hid-passthrough-armv7.tar.gz "./$f" >/dev/null 2>&1; then
               echo "MISSING: $f"
               MISSING=1

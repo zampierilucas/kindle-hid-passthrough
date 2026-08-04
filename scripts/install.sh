@@ -1,6 +1,7 @@
 #!/bin/sh
 
 INSTALL_DIR="/mnt/us/kindle_hid_passthrough"
+MAPPER_DIR="/mnt/us/kindle-button-mapper"
 APP_ID="com.lzampier.btmanager"
 APPREG_DB="/var/local/appreg.db"
 SCRIPTLET_DEST="/mnt/us/documents/BTManager.sh"
@@ -153,6 +154,7 @@ installAll()
     installUpstart
   fi
   installWAFApp
+  installButtonMapper
   if ! installKOReaderPlugin; then
     startDaemon
     echo ""
@@ -221,6 +223,26 @@ installWAFApp()
     echo "ERROR: $INSTALL_DIR/illusion/install-waf-app.sh not found"
     return 1
   fi
+}
+
+# Installs into its own directory with its own upstart job, so an existing
+# standalone install is updated rather than duplicated, and it keeps working if
+# this one is removed. Its install.sh runs under `set -e` and ends by poking
+# upstart, which fails on a Kindle that never had the job, so a non-zero exit
+# here is a warning and not a failed install.
+installButtonMapper()
+{
+  if [ ! -f "$SRC_DIR/button-mapper/install.sh" ]; then
+    echo " -> Button Mapper not bundled in this build, skipping"
+    return 0
+  fi
+  echo " -> Installing Button Mapper"
+  if /bin/sh "$SRC_DIR/button-mapper/install.sh"; then
+    echo " -> Ready."
+  else
+    echo " -> WARNING: Button Mapper install failed, gamepad mapping will be unavailable"
+  fi
+  return 0
 }
 
 installKOReaderPlugin()
@@ -307,6 +329,11 @@ EOF
 
   echo ""
   echo "Uninstall complete. Reboot recommended."
+  # Left alone on purpose, it is a separate tool that may predate this install.
+  if [ -f "$MAPPER_DIR/uninstall.sh" ]; then
+    echo "Button Mapper was left installed. Remove it with:"
+    echo "  sh $MAPPER_DIR/uninstall.sh"
+  fi
 }
 
 print_menu()
@@ -319,9 +346,10 @@ print_menu()
   printf " 5) Install upstart (auto-start on boot)\n"
   printf " 6) Install BTManager app\n"
   printf " 7) Install KOReader plugin\n"
-  printf " 8) Uninstall everything\n"
-  printf " 9) Disable auto-start on boot (remove upstart)\n"
-  printf "10) Quit\n"
+  printf " 8) Install Button Mapper (gamepad mapping)\n"
+  printf " 9) Uninstall everything\n"
+  printf "10) Disable auto-start on boot (remove upstart)\n"
+  printf "11) Quit\n"
 }
 
 # Non-interactive entry point: `sh install.sh <action>` runs one action and exits.
@@ -334,6 +362,7 @@ if [ $# -gt 0 ]; then
     installMainFiles)   installMainFiles; exit $? ;;
     installWAFApp)      installWAFApp; exit $? ;;
     installKOReaderPlugin) installKOReaderPlugin; exit $? ;;
+    installButtonMapper) installButtonMapper; exit $? ;;
     uninstallAll)       uninstallAll; exit $? ;;
     *) echo "Unknown action: $1" >&2; exit 1 ;;
   esac
@@ -341,7 +370,7 @@ fi
 
 while :; do
   print_menu
-  printf "Enter choice [1-10]: "
+  printf "Enter choice [1-11]: "
   read choice
   case "$choice" in
     1)
@@ -366,12 +395,15 @@ while :; do
       installKOReaderPlugin
       ;;
     8)
-      uninstallAll
+      installButtonMapper
       ;;
     9)
-      removeUpstart
+      uninstallAll
       ;;
     10)
+      removeUpstart
+      ;;
+    11)
       echo "Exiting."
       break
       ;;
