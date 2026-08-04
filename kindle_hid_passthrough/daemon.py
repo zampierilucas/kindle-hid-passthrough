@@ -9,6 +9,7 @@ import threading
 
 sys.path.insert(0, '/mnt/us/kindle_hid_passthrough')
 
+import button_mapper
 from api_server import PORT, APIServer, RequestHandler
 from bt_setup import chip, prepare_bt
 from config import config, get_version
@@ -241,6 +242,10 @@ class HIDDaemon:
 
 async def main():
     setup_daemon_logging(config.log_file)
+
+    # Devices paired before the mapper was installed (or before this existed)
+    # get their block on the next daemon start.
+    button_mapper.register_all(config.get_all_devices())
 
     prepare_bt()
 
