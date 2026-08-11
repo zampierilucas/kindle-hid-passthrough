@@ -1,3 +1,6 @@
+
+</think>
+
 # Kindle HID Passthrough
 
 [![Build](https://img.shields.io/github/actions/workflow/status/zampierilucas/kindle-hid-passthrough/build-arm.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white)](https://github.com/zampierilucas/kindle-hid-passthrough/actions/workflows/build-arm.yml)
@@ -97,7 +100,7 @@ A built-in Kindle app for managing Bluetooth HID devices from the touchscreen â€
 
 Paired list, scanning for nearby BLE and Classic HID devices, and the per-device view with status, protocol, address, connect and remove.
 
-Installed automatically via KindleForge. For manual installs, use option 6 in `scripts/install.sh`.
+Installed automatically via KindleForge. For manual installs, run `sh /mnt/us/kindle_hid_passthrough/illusion/install-waf-app.sh` or use option 6 in `scripts/install.sh`.
 
 The **Start on boot** toggle at the bottom installs or removes the upstart job. It is off by default, so the daemon only runs while you use it, which leaves the Bluetooth radio free for audio. Turn it on if you want your keyboard connected right after a reboot.
 
