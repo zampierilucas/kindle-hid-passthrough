@@ -12,7 +12,9 @@ A userspace Bluetooth HID host for Amazon Kindle e-readers. Connects Bluetooth H
 >
 > **If you only care about KOReader**, use the bundled [KOReader plugin](koreader-plugin/README.md). Bind any button to any KOReader action from inside KOReader, nothing else to install. That covers most people.
 >
-> **If you want mappings that work system-wide**, outside KOReader as well as in it, pair this with [kindle-button-mapper-rs](https://github.com/zampierilucas/kindle-button-mapper-rs). More setup, more power, and the only option for analog sticks.
+> Buttons, D-pad and triggers all map there. Analog sticks are the one thing it can't do yet, tracked in [kindle-button-mapper#40](https://github.com/zampierilucas/kindle-button-mapper-rs/issues/40).
+>
+> **If you want mappings that work system-wide**, outside KOReader as well as in it, pair this with [kindle-button-mapper-rs](https://github.com/zampierilucas/kindle-button-mapper-rs). More setup, more power, and it keeps working with KOReader closed.
 
 ## Overview
 
@@ -105,7 +107,7 @@ The **Start on boot** toggle at the bottom installs or removes the upstart job. 
 
 If you use KOReader, a bundled plugin gives you the same scan / pair / connect / disconnect / logs / cache controls from inside KOReader — no need to exit. Open via **cog icon (Settings) → Network → BT Manager - HID Passthrough**.
 
-It also maps keys. Press a button on a connected keyboard, gamepad or remote and bind it to any KOReader action, in-process, with no extra daemon and no HTTP Inspector.
+It also maps keys. Press a button, a D-pad direction or a trigger and bind it to any KOReader action, or to one that keeps working with KOReader closed. Mappings run through the bundled Button Mapper, and the KOReader actions need KOReader's HTTP Inspector on.
 
 <p align="center">
   <img src="koreader-plugin/screenshots/menu.png" width="48%" alt="Plugin menu">

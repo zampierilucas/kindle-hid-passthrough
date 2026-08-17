@@ -23,26 +23,24 @@ Full feature parity with the BTManager WAF app — you can manage everything fro
 
 **Settings → Network → BT Manager - HID Passthrough → Key mappings**
 
-Tap "Add a key…", press the key you want to bind, then pick an action for it. Modifier combos work where KOReader reports the modifier, so `Shift+F5` is a distinct binding from `F5`.
+Pick the device, tap "Map a button…", press the control you want, then choose what it should do. Buttons, D-pad directions and triggers all register. Analog sticks don't yet.
 
 <p align="center">
   <img src="screenshots/key-mappings.png" width="48%" alt="Key mappings">
   <img src="screenshots/key-actions.png" width="48%" alt="Choosing an action">
 </p>
 
-The action list opens on a short block of common ones — next/previous page, close, frontlight, night mode, menu, table of contents, bookmarks, rotate, back — because the full list runs to seven pages and the everyday bindings shouldn't need a hunt. Everything else is underneath, grouped exactly as KOReader groups it for gestures and profiles: anything you can bind to a gesture you can bind to a key.
+The action list opens on the everyday ones (page turns, menu, night mode, frontlight, font size, rotate) since the whole thing runs to several pages. Under that sits KOReader's entire Dispatcher list, grouped the way KOReader groups it for gestures and profiles, and after it the actions that drive the native Kindle reader.
 
-To drop a mapping, hold its row in the list, or use "Remove this key" at the bottom of that key's action list.
+Page turns, menu and brightness come from the `auto` group, which tries KOReader first and falls back to the Kindle reader, so those keep doing something once you leave KOReader. Everything picked out of the KOReader list only ever fires inside KOReader.
 
-Next page and Previous page are added by this plugin. Upstream only ships "Turn pages", which is a number you dial in from a −100..100 spinner; these are the fixed ±1 steps as one-tap actions. They also show up in the gesture manager, so they're usable outside this plugin too.
+"Handled by" at the top of each device decides who ends up holding the evdev grab, since only one process can have it. Gamepads go to the mapper and keyboards stay with KOReader by default, and you can force it either way per device.
 
-A key can run several actions at once — the entries are checkboxes, not radio buttons. That's Dispatcher behaviour, the same as gestures and profiles, and the last page of the action list has "Execute one by one" and "Show as QuickMenu" if you want a button to cycle or to offer a menu instead of firing everything.
+Open a mapping's row to change the action or remove it.
 
-Mappings are global — a key does the same thing in the reader and in the file browser — and live in `koreader/settings/hidpassthrough_keymap.lua`.
+This is a frontend for [kindle-button-mapper](https://github.com/zampierilucas/kindle-button-mapper-rs), which ships with the release and is what reads the device and runs the action. Mappings live in its `/mnt/us/kindle-button-mapper/config.ini`, so a binding made here is the one the Mapper Manager app shows.
 
-This runs entirely in-process. It does not use, and does not need, the HTTP Inspector plugin — unlike [kindle-button-mapper's](https://github.com/zampierilucas/kindle-button-mapper-rs) `scripts/koreader.sh`, which shells out to `curl` against `localhost:8080` for each press. Use button-mapper when you want mappings that work system-wide, outside KOReader; use this when you only care about KOReader.
-
-Binding a key KOReader already uses for something (arrows, Enter, page-turn keys) is allowed, but whether your binding or the built-in behavior wins depends on event propagation order, so prefer keys the reader doesn't already claim. If a binding leaves you stuck, delete `koreader/settings/hidpassthrough_keymap.lua` and restart KOReader.
+KOReader actions ride on KOReader's HTTP Inspector, so it needs to be enabled with auto-start on. The `auto` and Kindle reader ones don't.
 
 ### Keys that KOReader normally ignores
 
@@ -57,9 +55,9 @@ just logs
 
 ### Gamepads
 
-KOReader's `externalkeyboard` plugin only ever looks for keyboards, so a gamepad, which FBInk classifies as `JOYSTICK`, is never opened and its buttons reach nothing. This plugin opens those itself, so `BtnA` and friends become bindable like any other key.
+KOReader's `externalkeyboard` plugin only ever looks for keyboards, so a gamepad, which FBInk classifies as `JOYSTICK`, is never opened and its buttons reach nothing. This plugin opens those itself, so `BtnA` and friends arrive as ordinary keys whenever the mapper isn't holding the node. Set "Handled by" to "KOReader only" if that's what you're after.
 
-Only the buttons. Sticks and the D-pad hat are `EV_ABS` and never become key events, so they can't be bound here. If you want those, that's what [kindle-button-mapper](https://github.com/zampierilucas/kindle-button-mapper-rs) is for.
+The D-pad and the triggers are `EV_ABS` and never become key events, so map those the way described above, the mapper reads the axes directly. Analog sticks are out for now, [kindle-button-mapper#40](https://github.com/zampierilucas/kindle-button-mapper-rs/issues/40).
 
 ## Requirements
 
