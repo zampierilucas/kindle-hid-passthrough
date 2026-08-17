@@ -259,11 +259,9 @@ async def main():
     server_thread.start()
     log.info(f"API server listening on port {PORT}")
 
-    monitor = None
-    if not chip().survives_suspend:
-        monitor = PowerMonitor(controller)
-        monitor.start()
-        log.info("Watching powerd for system suspend")
+    monitor = PowerMonitor(controller)
+    monitor.start()
+    log.info("Watching powerd for system suspend")
 
     # Signal handling
     shutdown = asyncio.Event()
@@ -293,8 +291,7 @@ async def main():
             except asyncio.CancelledError:
                 pass
 
-    if monitor:
-        monitor.stop()
+    monitor.stop()
     server.shutdown()
     logger.info("Daemon stopped")
 

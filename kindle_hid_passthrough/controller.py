@@ -219,12 +219,19 @@ class DaemonController:
 
     async def _do_system_suspend(self, event):
         async with self._op_lock:
+            keeps_radio = chip().survives_suspend
+            # A chip that outlives the screensaver keeps serving the remote
+            # with the screen off; only a real suspend has to detach, and it
+            # must, or the peer holds a dead link and stops page scanning.
+            if keeps_radio and event != 'readyToSuspend':
+                return
             if self.daemon._suspended:
                 return
-            logger.info(f"System suspend ({event}): powering BT off")
+            logger.info(f"System suspend ({event}): releasing BT")
             self._suspended_by_system = True
             await self.daemon.suspend()
-            chip().power_off()
+            if not keeps_radio:
+                chip().power_off()
 
     def on_system_resume(self, event):
         """From power monitor thread: re-warm BT after wake."""
