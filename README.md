@@ -60,7 +60,7 @@ Install directly from [KindleForge](https://github.com/KindleTweaks/KindleForge)
 
 1. Download the latest release from [GitHub Releases](https://github.com/zampierilucas/kindle-hid-passthrough/releases) and unpack it somewhere other than the install directory:
    ```bash
-   wget https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough-armv7.tar.gz
+   curl -L -o kindle-hid-passthrough-armv7.tar.gz https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough-armv7.tar.gz
    mkdir -p /mnt/us/khp-release
    tar -xzf kindle-hid-passthrough-armv7.tar.gz -C /mnt/us/khp-release
    ```
