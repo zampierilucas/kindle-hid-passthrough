@@ -6,6 +6,8 @@ APP_ID="com.lzampier.btmanager"
 APPREG_DB="/var/local/appreg.db"
 SCRIPTLET_DEST="/mnt/us/documents/BTManager.sh"
 KUAL_DIR="/mnt/us/extensions/kindle-hid-passthrough"
+KUAL_LOG="/tmp/kindle-hid-kual.log"
+FBINK="/mnt/us/koreader/fbink"
 
 MENU="installAll|Install or update everything (recommended)|yes
 pairDevice|Pair Bluetooth keyboard|no
@@ -190,6 +192,28 @@ installUdevRules()
   echo " -> Ready."
 }
 
+screenAlert()
+{
+  title=$(printf '%s' "$1" | sed 's/"/\\"/g')
+  text=$(printf '%s' "$2" | sed 's/"/\\"/g')
+  lipc-set-prop com.lab126.pillow pillowAlert "{ \"clientParams\":{ \"alertId\":\"appAlert1\", \"show\":true, \"customStrings\":[ { \"matchStr\":\"alertTitle\", \"replaceStr\":\"$title\" }, { \"matchStr\":\"alertText\", \"replaceStr\":\"$text\" } ] } }" 2>/dev/null
+}
+
+kualRun()
+{
+  [ -x "$FBINK" ] && "$FBINK" -q -c >/dev/null 2>&1
+  "$1" 2>&1 | tee "$KUAL_LOG" | {
+    row=2
+    while IFS= read -r line; do
+      [ -x "$FBINK" ] || continue
+      [ "$row" -gt 55 ] && { "$FBINK" -q -c >/dev/null 2>&1; row=2; }
+      "$FBINK" -q -y "$row" "$line" >/dev/null 2>&1
+      row=$((row + 1))
+    done
+  }
+  screenAlert "HID Passthrough" "$(tail -n 1 "$KUAL_LOG")"
+}
+
 kualMenu()
 {
   printf '{"items":[{"name":"Bluetooth HID passthrough","priority":0,"items":['
@@ -203,7 +227,7 @@ kualMenu()
     priority=$((priority + 1))
     printf '%s{"name":"%s","priority":%d,"action":"%s/scripts/install.sh",' \
       "$separator" "$label" "$priority" "$INSTALL_DIR"
-    printf '"params":"%s","exitmenu":false,"internal":"status %s . . ."}' \
+    printf '"params":"kualRun %s","exitmenu":false,"internal":"status %s . . ."}' \
       "$action" "$label"
     separator=","
   done
@@ -431,6 +455,9 @@ print_menu()
 if [ $# -gt 0 ]; then
   case "$1" in
     update) installAll; exit $? ;;
+    kualRun)
+      echo "$MENU" | cut -d'|' -f1 | grep -qx "$2" || { echo "Unknown action: $2" >&2; exit 1; }
+      kualRun "$2"; exit $? ;;
     installAll|installUdevRules|installUpstart|removeUpstart|installMainFiles| \
     installWAFApp|installKUAL|installKOReaderPlugin|installButtonMapper| \
     uninstallButtonMapper|uninstallAll|kualMenu)

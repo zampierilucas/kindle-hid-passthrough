@@ -39,7 +39,13 @@ def test_kual_params_are_accepted_actions():
     installer = (REPO / "scripts" / "install.sh").read_text()
     dispatcher = installer.split("if [ $# -gt 0 ]; then")[1].split("esac")[0]
     accepted = set(re.findall(r"[A-Za-z]\w+(?=\s*[|)])", dispatcher))
+    offered = {
+        line.split("|")[0]
+        for line in installer.split('MENU="')[1].split('"')[0].splitlines()
+    }
     for action, params in _actions(_menu()["items"]):
         if not action.endswith("install.sh"):
             continue
-        assert params in accepted, params
+        entry, _, argument = params.partition(" ")
+        assert entry in accepted, params
+        assert argument in offered, params
