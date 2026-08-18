@@ -7,6 +7,18 @@ APPREG_DB="/var/local/appreg.db"
 SCRIPTLET_DEST="/mnt/us/documents/BTManager.sh"
 KUAL_DIR="/mnt/us/extensions/kindle-hid-passthrough"
 
+MENU="installAll|Install or update everything (recommended)|yes
+pairDevice|Pair Bluetooth keyboard|no
+listDevices|List paired devices|no
+installUdevRules|Install udev rules (keyboard service)|yes
+installUpstart|Install upstart (auto-start on boot)|yes
+installWAFApp|Install BTManager app|yes
+installKOReaderPlugin|Install KOReader plugin|yes
+installButtonMapper|Install Button Mapper (gamepad mapping)|yes
+installKUAL|Install KUAL menu entry|no
+uninstallAll|Uninstall everything|yes
+removeUpstart|Disable auto-start on boot (remove upstart)|yes"
+
 SRC_DIR=$(cd "$(dirname "$0")/.." && pwd)
 
 # True when the tree is already sitting at its destination, so the copies below
@@ -16,7 +28,7 @@ SRC_DIR=$(cd "$(dirname "$0")/.." && pwd)
 SAME_DIR=0
 SENTINEL=".khp-install-probe.$$"
 mkdir -p "$INSTALL_DIR" 2>/dev/null
-if : > "$INSTALL_DIR/$SENTINEL" 2>/dev/null; then
+if [ -d "$INSTALL_DIR" ] && true > "$INSTALL_DIR/$SENTINEL" 2>/dev/null; then
   [ -e "$SRC_DIR/$SENTINEL" ] && SAME_DIR=1
   rm -f "$INSTALL_DIR/$SENTINEL"
 fi
@@ -178,6 +190,26 @@ installUdevRules()
   echo " -> Ready."
 }
 
+kualMenu()
+{
+  printf '{"items":[{"name":"Bluetooth HID passthrough","priority":0,"items":['
+  printf '{"name":"Start daemon","priority":1,'
+  printf '"action":"%s/scripts/hid-passthrough-daemon.sh","params":"start"},' "$INSTALL_DIR"
+  printf '{"name":"Stop daemon","priority":2,'
+  printf '"action":"%s/scripts/hid-passthrough-daemon.sh","params":"stop"},' "$INSTALL_DIR"
+  printf '{"name":"Install","priority":3,"items":['
+  echo "$MENU" | while IFS='|' read -r action label in_kual; do
+    [ "$in_kual" = yes ] || continue
+    priority=$((priority + 1))
+    printf '%s{"name":"%s","priority":%d,"action":"%s/scripts/install.sh",' \
+      "$separator" "$label" "$priority" "$INSTALL_DIR"
+    printf '"params":"%s","exitmenu":false,"internal":"status %s . . ."}' \
+      "$action" "$label"
+    separator=","
+  done
+  printf ']}]}]}\n'
+}
+
 installKUAL()
 {
   if [ ! -d /mnt/us/extensions ]; then
@@ -186,7 +218,8 @@ installKUAL()
   fi
   echo " -> Installing KUAL menu entry"
   mkdir -p "$KUAL_DIR"
-  cp "$SRC_DIR/assets/config.xml" "$SRC_DIR/assets/menu.json" "$KUAL_DIR/"
+  cp "$SRC_DIR/assets/config.xml" "$KUAL_DIR/"
+  kualMenu > "$KUAL_DIR/menu.json"
   echo " -> Ready."
 }
 
@@ -378,81 +411,51 @@ uninstallButtonMapper()
   return 0
 }
 
+menu_count()
+{
+  echo "$MENU" | wc -l
+}
+
 print_menu()
 {
   printf "\nSelect an option:\n"
-  printf " 1) Install or update everything (recommended)\n"
-  printf " 2) Pair Bluetooth keyboard\n"
-  printf " 3) List paired devices\n"
-  printf " 4) Install udev rules (keyboard service)\n"
-  printf " 5) Install upstart (auto-start on boot)\n"
-  printf " 6) Install BTManager app\n"
-  printf " 7) Install KOReader plugin\n"
-  printf " 8) Install Button Mapper (gamepad mapping)\n"
-  printf " 9) Uninstall everything\n"
-  printf "10) Disable auto-start on boot (remove upstart)\n"
-  printf "11) Quit\n"
+  i=0
+  echo "$MENU" | while IFS='|' read -r action label kual; do
+    i=$((i + 1))
+    printf "%2d) %s\n" "$i" "$label"
+  done
+  printf "%2d) Quit\n" "$(($(menu_count) + 1))"
 }
 
 # Non-interactive entry point: `sh install.sh <action>` runs one action and exits.
 if [ $# -gt 0 ]; then
   case "$1" in
-    installAll|update)  installAll; exit $? ;;
-    installUdevRules)   installUdevRules; exit $? ;;
-    installUpstart)     installUpstart; exit $? ;;
-    removeUpstart)      removeUpstart; exit $? ;;
-    installMainFiles)   installMainFiles; exit $? ;;
-    installWAFApp)      installWAFApp; exit $? ;;
-    installKUAL)        installKUAL; exit $? ;;
-    installKOReaderPlugin) installKOReaderPlugin; exit $? ;;
-    installButtonMapper) installButtonMapper; exit $? ;;
-    uninstallButtonMapper) uninstallButtonMapper; exit $? ;;
-    uninstallAll)       uninstallAll; exit $? ;;
+    update) installAll; exit $? ;;
+    installAll|installUdevRules|installUpstart|removeUpstart|installMainFiles| \
+    installWAFApp|installKUAL|installKOReaderPlugin|installButtonMapper| \
+    uninstallButtonMapper|uninstallAll|kualMenu)
+      "$1"; exit $? ;;
     *) echo "Unknown action: $1" >&2; exit 1 ;;
   esac
 fi
 
 while :; do
   print_menu
-  printf "Enter choice [1-11]: "
-  read choice
+  count=$(menu_count)
+  printf "Enter choice [1-%d]: " "$((count + 1))"
+  read choice || break
   case "$choice" in
-    1)
-      installAll
-      ;;
-    2)
-      pairDevice
-      ;;
-    3)
-      listDevices
-      ;;
-    4)
-      installUdevRules
-      ;;
-    5)
-      installUpstart
-      ;;
-    6)
-      installWAFApp
-      ;;
-    7)
-      installKOReaderPlugin
-      ;;
-    8)
-      installButtonMapper
-      ;;
-    9)
-      uninstallAll
-      ;;
-    10)
-      removeUpstart
-      ;;
-    11)
-      echo "Exiting."
-      break
-      ;;
-    *)
+    ''|*[!0-9]*)
       printf "Invalid option: %s\n" "$choice"
+      continue
       ;;
   esac
+  if [ "$choice" -ge 1 ] && [ "$choice" -le "$count" ]; then
+    "$(echo "$MENU" | sed -n "${choice}p" | cut -d'|' -f1)"
+  elif [ "$choice" -eq "$((count + 1))" ]; then
+    echo "Exiting."
+    break
+  else
+    printf "Invalid option: %s\n" "$choice"
+  fi
 done
