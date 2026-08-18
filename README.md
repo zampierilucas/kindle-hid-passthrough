@@ -116,6 +116,10 @@ It also maps keys. Press a button, a D-pad direction or a trigger and bind it to
 
 For most people this is all you need, and it's the simpler half of the note at the top of this README. Auto-installed via the interactive installer when `/mnt/us/koreader/plugins/` exists. Requires KOReader 2026.07 or newer, which handles keyboard hot-plug natively. See [`koreader-plugin/README.md`](koreader-plugin/README.md) for details.
 
+### KUAL
+
+If KUAL is installed, a **Bluetooth HID passthrough** entry is added alongside it, with start and stop for the daemon and an **Install** submenu that runs the same install, KOReader plugin install and uninstall actions as `scripts/install.sh`. Handy for reinstalling the plugin after a KOReader update without SSH. It is dropped in whenever `/mnt/us/extensions/` exists and goes away with the uninstall.
+
 ## Usage
 
 ### Pairing a device

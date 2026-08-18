@@ -5,6 +5,7 @@ MAPPER_DIR="/mnt/us/kindle-button-mapper"
 APP_ID="com.lzampier.btmanager"
 APPREG_DB="/var/local/appreg.db"
 SCRIPTLET_DEST="/mnt/us/documents/BTManager.sh"
+KUAL_DIR="/mnt/us/extensions/kindle-hid-passthrough"
 
 SRC_DIR=$(cd "$(dirname "$0")/.." && pwd)
 
@@ -154,6 +155,7 @@ installAll()
     installUpstart
   fi
   installWAFApp
+  installKUAL
   installButtonMapper
   if ! installKOReaderPlugin; then
     startDaemon
@@ -173,6 +175,18 @@ installUdevRules()
   cp "$SRC_DIR/assets/99-hid-keyboard.rules" /etc/udev/rules.d
   /usr/sbin/udevadm control --reload-rules
   /usr/sbin/mntroot ro
+  echo " -> Ready."
+}
+
+installKUAL()
+{
+  if [ ! -d /mnt/us/extensions ]; then
+    echo " -> KUAL not found, skipping menu entry"
+    return 0
+  fi
+  echo " -> Installing KUAL menu entry"
+  mkdir -p "$KUAL_DIR"
+  cp "$SRC_DIR/assets/config.xml" "$SRC_DIR/assets/menu.json" "$KUAL_DIR/"
   echo " -> Ready."
 }
 
@@ -336,6 +350,9 @@ EOF
     rm -rf "$PLUGINS_DIR/hidpassthrough.koplugin"
   fi
 
+  echo " -> Removing KUAL menu entry"
+  rm -rf "$KUAL_DIR"
+
   echo " -> Removing install directory $INSTALL_DIR"
   cd /tmp
   rm -rf "$INSTALL_DIR"
@@ -386,6 +403,7 @@ if [ $# -gt 0 ]; then
     removeUpstart)      removeUpstart; exit $? ;;
     installMainFiles)   installMainFiles; exit $? ;;
     installWAFApp)      installWAFApp; exit $? ;;
+    installKUAL)        installKUAL; exit $? ;;
     installKOReaderPlugin) installKOReaderPlugin; exit $? ;;
     installButtonMapper) installButtonMapper; exit $? ;;
     uninstallButtonMapper) uninstallButtonMapper; exit $? ;;
