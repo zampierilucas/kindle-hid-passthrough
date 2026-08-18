@@ -118,7 +118,7 @@ For most people this is all you need, and it's the simpler half of the note at t
 
 ### KUAL
 
-If KUAL is installed, a **Bluetooth HID passthrough** entry is added alongside it, with start and stop for the daemon and an **Install** submenu carrying every option from `scripts/install.sh` that runs without a terminal, install and update, the KOReader plugin, BTManager, Button Mapper, autostart and the uninstall. Handy for reinstalling the plugin after a KOReader update without SSH. The menu is generated from the installer's own option table, so it is dropped in whenever `/mnt/us/extensions/` exists, tracks whatever the installer offers, and goes away with the uninstall.
+If `/mnt/us/extensions/` exists you also get a KUAL entry with the installer options in it, so you can reinstall the plugin without SSH.
 
 ## Usage
 
