@@ -323,11 +323,13 @@ installKOReaderPlugin()
     return 0
   }
   SRC_PLUGIN="$SRC_DIR/koreader-plugin/hidpassthrough.koplugin"
-  if [ ! -f "$SRC_PLUGIN/main.lua" ]; then
-    echo "ERROR: plugin source not found at $SRC_PLUGIN" >&2
-    echo "       Run this script from the extracted release, not a partial copy." >&2
-    return 1
-  fi
+  for f in main.lua _meta.lua event_map_extra.lua mapper.lua koreader_actions.lua; do
+    if [ ! -f "$SRC_PLUGIN/$f" ]; then
+      echo "ERROR: $f is missing from $SRC_PLUGIN" >&2
+      echo "       Run this script from the extracted release, not a partial copy." >&2
+      return 1
+    fi
+  done
 
   echo " -> Installing KOReader plugin into $PLUGINS_DIR"
   DEST="$PLUGINS_DIR/hidpassthrough.koplugin"
@@ -336,13 +338,6 @@ installKOReaderPlugin()
     echo "ERROR: failed to copy the plugin to $DEST" >&2
     return 1
   fi
-
-  for f in main.lua _meta.lua event_map_extra.lua mapper.lua koreader_actions.lua; do
-    if [ ! -f "$DEST/$f" ]; then
-      echo "ERROR: $f is missing from $DEST" >&2
-      return 1
-    fi
-  done
   echo " -> Ready. Restart KOReader to load it."
 }
 
