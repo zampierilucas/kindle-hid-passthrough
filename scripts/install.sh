@@ -111,6 +111,7 @@ installMainFiles()
   if in_install_dir; then
     removeStaleFiles
     chmod +x "$INSTALL_DIR/kindle-hid-passthrough"
+    echo " -> Running from the install directory, program files left as they are."
     echo " -> Ready."
     return 0
   fi
