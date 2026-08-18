@@ -6,29 +6,32 @@ import os
 import struct
 from typing import Optional
 
-__all__ = ['UHIDDevice', 'UHIDError', 'Bus', 'strip_digitizer_collections']
+__all__ = ['UHIDDevice', 'UHIDError', 'Bus', 'sanitize_digitizer']
 
 logger = logging.getLogger(__name__)
 
-def strip_digitizer_collections(descriptor: bytes) -> bytes:
-    """Drop any top-level collection that contains a Digitizer (0x0D) usage.
+def sanitize_digitizer(descriptor: bytes) -> bytes:
+    """Make a Digitizer usable on the Kindle instead of discarding it.
 
-    Two reasons a Digitizer must never reach the Kindle:
-      * The kernel lacks CONFIG_HID_MULTITOUCH, so hid-core silently drops the
-        whole UHID device when a Digitizer collection is present.
-      * Digitizer Tip Pressure surfaces as EV_ABS:ABS_PRESSURE, which KOReader's
-        Kindle gyro decoders read as a screen-rotation event and use to flip the
-        reader into the opposite landscape (issue #83).
+    Tip Pressure is turned into padding, because EV_ABS:ABS_PRESSURE is what
+    KOReader's gyro decoders read as a screen-rotation event (issue #83). The
+    field keeps its bits so the report layout still matches what the device
+    sends, it just stops producing an event.
 
-    A Digitizer usage page anywhere inside a top-level collection taints the
-    whole collection, so a digitizer nested in a keyboard/pointer combo is
-    caught too, not only a digitizer declared at the collection's top.
+    Only genuine multitouch collections (Contact Identifier / Contact Count)
+    are dropped, since the kernel has no CONFIG_HID_MULTITOUCH to parse them.
+    Single-touch digitizers are left alone: hid-generic handles them and gives
+    us BTN_TOUCH plus ABS_X/ABS_Y, which is what page turners report on and
+    what gesture mapping needs.
     """
+    out = bytearray(descriptor)
     kept = []
     i = 0
     seg_start = 0
     depth = 0
-    seg_has_digitizer = False
+    usage_page = None
+    usages = []
+    seg_multitouch = False
 
     while i < len(descriptor):
         b = descriptor[i]
@@ -50,29 +53,36 @@ def strip_digitizer_collections(descriptor: bytes) -> bytes:
         else:
             val = 0
 
-        # Global Usage Page item, at any depth: 0x0D taints the segment.
-        if item_type == 1 and tag == 0 and val == 0x0D:
-            seg_has_digitizer = True
-        if item_type == 0 and tag == 10:
-            depth += 1
-        if item_type == 0 and tag == 12:
-            depth -= 1
-            if depth == 0:
-                end = i + 1 + size
-                if not seg_has_digitizer:
-                    kept.append(descriptor[seg_start:end])
-                seg_start = end
-                seg_has_digitizer = False
+        if item_type == 1 and tag == 0:                 # Global: Usage Page
+            usage_page = val
+        elif item_type == 2 and tag == 0:               # Local: Usage
+            page = (val >> 16) if size == 4 else usage_page
+            usage = (val & 0xFFFF) if size == 4 else val
+            usages.append((page, usage))
+            if page == 0x0D and usage in (0x51, 0x54):  # Contact ID / Count
+                seg_multitouch = True
+        elif item_type == 0:                            # Main item
+            if tag == 8 and usages and all(u == (0x0D, 0x30) for u in usages):
+                out[i + 1] |= 0x01                      # Input: set Constant
+            if tag == 10:
+                depth += 1
+            elif tag == 12:
+                depth -= 1
+                if depth == 0:
+                    end = i + 1 + size
+                    if not seg_multitouch:
+                        kept.append(bytes(out[seg_start:end]))
+                    seg_start = end
+                    seg_multitouch = False
+            usages = []
 
         i += 1 + size
 
-    if not kept:
-        return descriptor
-
-    result = b''.join(kept)
+    result = b''.join(kept) if kept else bytes(out)
     if result != descriptor:
-        logger.info(f"Stripped digitizer collection(s) ({len(descriptor)} -> {len(result)} bytes)")
+        logger.info(f"Sanitized digitizer ({len(descriptor)} -> {len(result)} bytes)")
     return result
+
 
 def descriptor_is_pointer(descriptor: bytes) -> bool:
     """True if the descriptor's first top-level Application collection is a

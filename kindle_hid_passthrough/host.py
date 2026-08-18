@@ -16,7 +16,7 @@ from device_cache import DeviceCache
 from logging_utils import log
 from pairing import create_keystore, create_pairing_config
 from transport import create_bumble_device
-from uhid_handler import Bus, UHIDDevice, descriptor_is_pointer, strip_digitizer_collections
+from uhid_handler import Bus, UHIDDevice, descriptor_is_pointer, sanitize_digitizer
 
 __all__ = ['HIDHost']
 
@@ -521,7 +521,7 @@ class HIDHost(ClassicMixin, BLEMixin):
 
         try:
             name = self._configured_name(session.address) or session.name or "HID Device"
-            descriptor = strip_digitizer_collections(session.report_map)
+            descriptor = sanitize_digitizer(session.report_map)
             session.uhid_device = UHIDDevice(
                 name=name,
                 report_descriptor=descriptor,
