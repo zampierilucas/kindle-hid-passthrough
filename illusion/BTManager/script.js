@@ -252,7 +252,7 @@ var BTManager = (function() {
             if (json === lastStatusJson) return;
             lastStatusJson = json;
 
-            var running = data.daemon_running || data.scanning || data.pairing;
+            var running = data.daemon_running;
             setToggleUI(running);
 
             var conns = getConnections(data);

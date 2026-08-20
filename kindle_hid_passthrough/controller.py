@@ -35,6 +35,7 @@ class DaemonController:
 
         self._op_lock = asyncio.Lock()
         self._suspended_by_system = False
+        self.bt_enabled = True
 
         # Scan state
         self.scan_result = None
@@ -59,7 +60,7 @@ class DaemonController:
         devices = self._get_devices_cached()
 
         status = {
-            "daemon_running": self.daemon.running and not self.daemon._suspended,
+            "daemon_running": self.bt_enabled and self.daemon.running,
             "devices": devices,
             "device_count": len(devices),
             "scanning": self.is_scanning,
@@ -71,6 +72,11 @@ class DaemonController:
         status["connections"] = conn.get("connections", [])
 
         return status
+
+    async def _resume_if_enabled(self):
+        """Resume unless BT was toggled off while the op ran."""
+        if self.bt_enabled:
+            await self.daemon.resume()
 
     def _get_devices_cached(self) -> list:
         """Device list from devices.conf, cached by file mtime."""
@@ -138,7 +144,7 @@ class DaemonController:
                 self.scan_result = {"ok": False, "error": str(e)}
             finally:
                 self.is_scanning = False
-                await self.daemon.resume()
+                await self._resume_if_enabled()
 
     # ---- Pair ----
 
@@ -176,7 +182,7 @@ class DaemonController:
                 self.pair_result = {"ok": False, "address": address, "error": str(e)}
             finally:
                 self.is_pairing = False
-                await self.daemon.resume()
+                await self._resume_if_enabled()
 
     # ---- Connect / Resume ----
 
@@ -206,10 +212,10 @@ class DaemonController:
             try:
                 await self.daemon.suspend()
                 config.add_device(address, protocol)
-                await self.daemon.resume()
+                await self._resume_if_enabled()
             except Exception as e:
                 logger.error(f"Connect failed: {errstr(e)}")
-                await self.daemon.resume()
+                await self._resume_if_enabled()
 
     # ---- System suspend (powerd) ----
 
@@ -242,7 +248,7 @@ class DaemonController:
             if not self._suspended_by_system:
                 return
             self._suspended_by_system = False
-            if not self.daemon._suspended:
+            if not self.bt_enabled or not self.daemon._suspended:
                 return
             logger.info(f"System resume ({event}): restarting BT")
             await self.daemon.resume()

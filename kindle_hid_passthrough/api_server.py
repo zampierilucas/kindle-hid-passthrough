@@ -149,19 +149,15 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _handle_start(self):
         controller = self._controller
-        if controller.daemon.running and not controller.daemon._suspended:
-            self._send_json({"ok": True, "message": "Daemon already running"})
-            return
+        controller.bt_enabled = True
         controller.request_connect()
-        self._send_json({"ok": True, "message": "Daemon resuming"})
+        self._send_json({"ok": True, "message": "Bluetooth on"})
 
     def _handle_stop(self):
         controller = self._controller
-        if controller.daemon._suspended:
-            self._send_json({"ok": True, "message": "Already stopped"})
-            return
+        controller.bt_enabled = False
         controller.request_disconnect(suspend=True)
-        self._send_json({"ok": True, "message": "Daemon stopped"})
+        self._send_json({"ok": True, "message": "Bluetooth off"})
 
     def _handle_devices(self):
         status = self._controller.get_status()
