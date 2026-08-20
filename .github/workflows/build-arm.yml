@@ -30,8 +30,10 @@ jobs:
         id: cache-nuitka
         with:
           path: cache-nuitka
-          key: nuitka-cache-${{ runner.arch }}
-          restore-keys: nuitka-cache-
+          key: nuitka-cache-${{ runner.arch }}-${{ github.run_id }}
+          restore-keys: |
+            nuitka-cache-${{ runner.arch }}-
+            nuitka-cache-
 
       - name: Inject buildkit cache
         uses: reproducible-containers/buildkit-cache-dance@v3
