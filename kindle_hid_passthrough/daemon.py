@@ -22,6 +22,8 @@ from scanner import Scanner
 
 logger = logging.getLogger(__name__)
 
+SUSPEND_TIMEOUT = 10.0
+
 
 class HIDDaemon:
     """Daemon that maintains persistent connection to an HID device."""
@@ -52,21 +54,32 @@ class HIDDaemon:
         # Cancel the host task first — this stops host.run()'s connect loop
         if self._host_task and not self._host_task.done():
             self._host_task.cancel()
-            try:
-                await self._host_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await self._abandon_after_timeout(self._host_task, "host task")
             self._host_task = None
 
         # Then clean up any remaining resources
         if self.host:
-            try:
-                await self.host.cleanup()
-            except Exception:
-                pass
+            await self._abandon_after_timeout(
+                asyncio.ensure_future(self.host.cleanup()), "host cleanup")
             self.host = None
 
         logger.info("Daemon suspended")
+
+    @staticmethod
+    async def _abandon_after_timeout(task, what):
+        """Wait out a teardown task, then leave it behind if it will not end.
+
+        asyncio.wait() is deliberate: wait_for() re-cancels and awaits, which
+        hangs forever on a task that ignores cancellation.
+        """
+        done, _ = await asyncio.wait({task}, timeout=SUSPEND_TIMEOUT)
+        if not done:
+            logger.warning(f"Suspend: {what} did not finish, abandoning it")
+            return
+        try:
+            task.result()
+        except (asyncio.CancelledError, Exception):
+            pass
 
     async def scan(self, duration=10.0, on_device_found=None):
         """Scan for BT devices. Must be called while suspended."""
