@@ -181,7 +181,7 @@ class BLEMixin:
                     connection_interval_min=12,
                     connection_interval_max=24,
                     max_latency=0,
-                    supervision_timeout=72,
+                    supervision_timeout=500,
                     min_ce_length=0,
                     max_ce_length=0,
                 ), check_result=True)
