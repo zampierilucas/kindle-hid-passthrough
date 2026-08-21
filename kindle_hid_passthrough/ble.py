@@ -470,7 +470,8 @@ class BLEMixin:
 
     def _on_ble_hid_report(self, session, value, report_id):
         """Handle BLE HID report."""
-        self._forward_report(session, bytes([report_id]) + bytes(value))
+        prefix = bytes([report_id]) if report_id else b''
+        self._forward_report(session, prefix + bytes(value))
 
     async def _pair_ble(self, address: str) -> bool:
         """Pair with a BLE device."""
