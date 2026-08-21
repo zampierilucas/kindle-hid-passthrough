@@ -76,6 +76,7 @@ RUN printf '%s\n' \
 # Build with Nuitka in standalone mode (creates directory with all deps)
 RUN --mount=type=cache,target=/nuitka-cache \
     --mount=type=cache,target=/ccache \
+    --mount=type=tmpfs,target=/tmp \
     python3 -m nuitka \
     --mode=standalone \
     --jobs=$(nproc) \
