@@ -78,7 +78,7 @@ RUN --mount=type=cache,target=/nuitka-cache \
     --mount=type=cache,target=/ccache \
     python3 -m nuitka \
     --mode=standalone \
-    --jobs=$(nproc) \
+    --jobs=1 \
     --lto=yes \
     --show-progress \
     --output-dir=/build/nuitka-out \
