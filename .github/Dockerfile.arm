@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     patch \
     patchelf \
     ccache \
+    mold \
     libffi-dev \
     zlib1g-dev \
     linux-libc-dev \
@@ -53,7 +54,7 @@ COPY kindle_hid_passthrough/modules/ /build/kindle_hid_passthrough/modules/
 
 # ARM-specific compiler flags to fix branch range errors
 ENV CFLAGS="-O3 -mword-relocations -mlong-calls -ffunction-sections -fdata-sections"
-ENV LDFLAGS="-Wl,--gc-sections"
+ENV LDFLAGS="-fuse-ld=mold -Wl,--gc-sections"
 
 # Build syscall wrapper for Kindle kernel compatibility
 # Kindle kernel 4.9.77 lacks preadv2/pwritev2 (added in 4.16)
