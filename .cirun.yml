@@ -1,0 +1,8 @@
+runners:
+  - name: arm-builder
+    cloud: oracle
+    instance_type: VM.Standard.A1.Flex
+    machine_image: <OCID-of-Ubuntu-24.04-aarch64-image>
+    region: <your-oci-region>
+    labels:
+      - cirun-arm-builder
