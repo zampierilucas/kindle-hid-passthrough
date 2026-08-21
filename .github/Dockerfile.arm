@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     patch \
     patchelf \
     ccache \
+    clang \
     libffi-dev \
     zlib1g-dev \
     linux-libc-dev \
@@ -52,7 +53,7 @@ COPY kindle_hid_passthrough/BUILD_SHA /build/kindle_hid_passthrough/
 COPY kindle_hid_passthrough/modules/ /build/kindle_hid_passthrough/modules/
 
 # ARM-specific compiler flags to fix branch range errors
-ENV CFLAGS="-O3 -mword-relocations -mlong-calls -ffunction-sections -fdata-sections"
+ENV CFLAGS="-O3 -mlong-calls -ffunction-sections -fdata-sections"
 ENV LDFLAGS="-Wl,--gc-sections"
 
 # Build syscall wrapper for Kindle kernel compatibility
@@ -80,6 +81,8 @@ RUN --mount=type=cache,target=/nuitka-cache \
     --mode=standalone \
     --jobs=$(nproc) \
     --lto=yes \
+    --clang \
+    --experimental=thin-lto \
     --show-progress \
     --output-dir=/build/nuitka-out \
     --include-data-file=kindle_hid_passthrough/config.ini=kindle_hid_passthrough/config.ini \
