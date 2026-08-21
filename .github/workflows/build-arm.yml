@@ -27,7 +27,7 @@ jobs:
         id: setup-buildx
 
       - name: Log in to GHCR
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.head_ref == 'test/clang-thinlto'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -35,7 +35,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Restore Nuitka build cache
-        if: github.ref != 'refs/heads/main'
+        if: github.ref != 'refs/heads/main' && github.head_ref != 'test/clang-thinlto'
         uses: actions/cache/restore@v4
         with:
           path: cache-nuitka
@@ -45,7 +45,7 @@ jobs:
             nuitka-cache-
 
       - name: Restore and save Nuitka build cache
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || github.head_ref == 'test/clang-thinlto'
         uses: actions/cache@v4
         with:
           path: cache-nuitka
@@ -60,7 +60,7 @@ jobs:
           builder: ${{ steps.setup-buildx.outputs.name }}
           cache-dir: cache-nuitka
           dockerfile: .github/Dockerfile.arm
-          skip-extraction: ${{ github.ref != 'refs/heads/main' }}
+          skip-extraction: ${{ github.ref != 'refs/heads/main' && github.head_ref != 'test/clang-thinlto' }}
 
       - name: Stamp build SHA
         id: stamp
