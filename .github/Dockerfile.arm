@@ -7,7 +7,7 @@
 # completely bypassing the Kindle's ancient glibc 2.20 / dynamic linker.
 # No staticx needed — just a directory with everything.
 
-FROM arm32v7/python:3.11-slim-bookworm
+FROM arm32v7/python:3.11-slim-trixie
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
