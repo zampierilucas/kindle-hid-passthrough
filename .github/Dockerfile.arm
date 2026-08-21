@@ -52,7 +52,7 @@ COPY kindle_hid_passthrough/BUILD_SHA /build/kindle_hid_passthrough/
 COPY kindle_hid_passthrough/modules/ /build/kindle_hid_passthrough/modules/
 
 # ARM-specific compiler flags to fix branch range errors
-ENV CFLAGS="-O3 -mword-relocations -mlong-calls -ffunction-sections -fdata-sections"
+ENV CFLAGS="-O2 -mword-relocations -mlong-calls -ffunction-sections -fdata-sections"
 ENV LDFLAGS="-Wl,--gc-sections"
 
 # Build syscall wrapper for Kindle kernel compatibility
