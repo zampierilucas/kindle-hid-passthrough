@@ -20,6 +20,8 @@ return {
 
     -- Editing / application keys
     [113] = "Mute",
+    [114] = "VMinus",
+    [115] = "VPlus",
     [128] = "Stop",
     [129] = "Again",
     [130] = "Props",
