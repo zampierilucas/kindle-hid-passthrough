@@ -53,7 +53,7 @@ COPY kindle_hid_passthrough/modules/ /build/kindle_hid_passthrough/modules/
 
 # ARM-specific compiler flags to fix branch range errors
 ENV CFLAGS="-O3 -fno-schedule-insns -mword-relocations -mlong-calls -ffunction-sections -fdata-sections"
-ENV LDFLAGS="-fno-schedule-insns -Wl,--gc-sections"
+ENV LDFLAGS="-fno-schedule-insns -flto-report-wpa -Wl,--gc-sections"
 
 # Build syscall wrapper for Kindle kernel compatibility
 # Kindle kernel 4.9.77 lacks preadv2/pwritev2 (added in 4.16)
@@ -107,6 +107,11 @@ RUN --mount=type=cache,target=/nuitka-cache \
     --nofollow-import-to=bumble.transport.pty \
     --nofollow-import-to=platformdirs \
     kindle_hid_passthrough/main.py
+
+RUN echo "=== 20 largest generated C sources ===" && \
+    find /build/nuitka-out -name '*.c' -printf '%s %p\n' 2>/dev/null | sort -rn | head -20 && \
+    echo "=== 20 largest object files ===" && \
+    find /build/nuitka-out -name '*.o' -printf '%s %p\n' 2>/dev/null | sort -rn | head -20
 
 # Copy the build container's dynamic linker and core glibc libs into the dist.
 # Nuitka standalone doesn't include glibc core libs (assumes they exist on target).
