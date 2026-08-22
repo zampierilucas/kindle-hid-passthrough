@@ -12,7 +12,6 @@ FROM arm32v7/python:3.11-slim-bookworm
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    patch \
     patchelf \
     ccache \
     libffi-dev \
@@ -26,17 +25,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install Python build tools
 RUN pip install --no-cache-dir \
-    nuitka \
+    https://github.com/Nuitka/Nuitka/archive/refs/tags/4.2.tar.gz \
     ordered-set \
     bumble==0.0.226 \
     aiofiles>=23.0.0
-
-# Patch bumble before Nuitka compiles it: Nuitka miscompiles the async
-# generator expression in gatt_server.on_att_find_by_type_value_request,
-# crashing the GATT server on inbound Find By Type Value requests (issue #109).
-COPY patches/ /build/patches/
-RUN BUMBLE_DIR="$(python3 -c 'import bumble, os; print(os.path.dirname(bumble.__file__))')" && \
-    patch -p1 -d "$BUMBLE_DIR" < /build/patches/bumble-gatt-server-async-genexpr.patch
 
 # Enable ccache and Nuitka's own caching
 ENV CCACHE_DIR=/ccache
