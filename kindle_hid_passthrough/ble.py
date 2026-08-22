@@ -2,6 +2,7 @@
 """BLE HID handler mixin for HIDHost."""
 
 import asyncio
+import time
 
 from bumble.core import AdvertisingData, BT_LE_TRANSPORT, InvalidStateError
 from bumble.device import Device, Peer
@@ -28,6 +29,33 @@ from config import Protocol, config, normalize_addr, clean_device_name
 from logging_utils import log
 
 HID_REPORT_TYPE_INPUT = 1
+
+# Standard Bluetooth Battery Service and Battery Level characteristic.
+# Bumble exposes 16-bit UUIDs as little-endian bytes (e.g. b'\x0f\x18' = 0x180F).
+GATT_BATTERY_SERVICE = b'\x0f\x18'
+GATT_BATTERY_LEVEL_CHARACTERISTIC = b'\x19\x2a'
+
+# How often to re-read the battery level while a BLE device is connected
+BATTERY_POLL_INTERVAL = 300  # seconds
+
+
+def uuid_str(uuid) -> str:
+    """Human-readable UUID for logging (16-bit int or 128-bit bytes)."""
+    if isinstance(uuid, int):
+        return f"0x{uuid:04x}"
+    return bytes(uuid).hex()
+
+
+def uuid_bytes(uuid) -> bytes:
+    """Normalize a Bumble UUID to little-endian bytes for equality checks.
+
+    Bumble exposes 16-bit UUIDs as little-endian bytes, but the object is
+    not a plain `bytes` and its `__eq__` does not accept bytes operands, so
+    direct `uuid == b'...'` comparisons fail. Normalize first instead.
+    """
+    if isinstance(uuid, int):
+        return uuid.to_bytes(2, "little")
+    return bytes(uuid)
 
 
 class BLEMixin:
@@ -141,6 +169,121 @@ class BLEMixin:
         self._load_cached_descriptor(session)
         await self._setup_ble_hid(session)
         log.success(f"[BLE] {self._format_device(session.address)} receiving HID reports")
+        # Fire-and-forget: read the standard Battery Service right away.
+        self._track_task(asyncio.create_task(self._read_ble_battery(session)))
+        self._track_task(asyncio.create_task(self._subscribe_other_notifications(session)))
+
+    async def _read_ble_battery(self, session):
+        """Read the Battery Level characteristic (0x2A19) once, if present."""
+        peer = session.peer
+        if peer is None or session.protocol != Protocol.BLE:
+            return None
+        try:
+            # Re-run service discovery: some devices settle their GATT table
+            # only after the HID connection is up.
+            await peer.discover_services()
+            battery_service = next(
+                (s for s in peer.services if uuid_bytes(s.uuid) == GATT_BATTERY_SERVICE),
+                None)
+            if battery_service is None:
+                log.info(
+                    f"[BLE] No Battery Service on {self._format_device(session.address)}; "
+                    f"services: {[uuid_str(s.uuid) for s in peer.services]}")
+                return None
+            if not battery_service.characteristics:
+                await peer.discover_characteristics(service=battery_service)
+            for char in battery_service.characteristics:
+                if uuid_bytes(char.uuid) != GATT_BATTERY_LEVEL_CHARACTERISTIC:
+                    continue
+                # Subscribe to battery notifications first, then read once.
+                try:
+                    await peer.subscribe(
+                        char,
+                        lambda value, s=session: self._on_ble_battery_notification(s, value))
+                except Exception as e:
+                    log.warning(f"[BLE] Battery notify subscribe failed for {session.address}: {e}")
+                value = await peer.read_value(char)
+                if value:
+                    session.battery_level = int(value[0])
+                    session.battery_updated = time.time()
+                    log.success(
+                        f"[BLE] {self._format_device(session.address)} battery: "
+                        f"{session.battery_level}%")
+                    return session.battery_level
+                return None
+            log.info(f"[BLE] Battery service found but no 0x2A19 on {session.address}")
+        except Exception as e:
+            log.warning(f"[BLE] Battery read failed for {session.address}: {e}")
+        return None
+
+    def _on_ble_battery_notification(self, session, value):
+        """Update battery from a Battery Level notification."""
+        if not value:
+            return
+        session.battery_level = int(value[0])
+        session.battery_updated = time.time()
+        log.success(
+            f"[BLE] {self._format_device(session.address)} battery: "
+            f"{session.battery_level}% (notify)")
+
+    async def _subscribe_other_notifications(self, session):
+        """Subscribe to every notify-able characteristic outside the HID
+        service, so battery pushes via vendor channels (e.g. ae02) are seen."""
+        peer = session.peer
+        if peer is None:
+            return
+        try:
+            for service in peer.services:
+                if service.uuid == GATT_HUMAN_INTERFACE_DEVICE_SERVICE:
+                    continue
+                if not service.characteristics:
+                    try:
+                        await peer.discover_characteristics(service=service)
+                    except Exception as e:
+                        log.debug(f"[BLE] Char discovery failed for {uuid_str(service.uuid)}: {e}")
+                        continue
+                for char in service.characteristics:
+                    if uuid_bytes(char.uuid) == GATT_BATTERY_LEVEL_CHARACTERISTIC:
+                        continue  # handled by _read_ble_battery
+                    properties = getattr(char, 'properties', 0) or 0
+                    if properties & 0x10:  # notify
+                        try:
+                            await peer.subscribe(
+                                char,
+                                lambda value, c=char, s=session:
+                                    self._on_other_notification(s, c, value))
+                            log.info(
+                                f"[BLE] Subscribed to notify {uuid_str(char.uuid)} "
+                                f"on {session.address}")
+                        except Exception as e:
+                            log.debug(
+                                f"[BLE] Subscribe failed for {uuid_str(char.uuid)}: {e}")
+        except Exception as e:
+            log.warning(f"[BLE] Notify subscription scan failed: {e}")
+
+    def _on_other_notification(self, session, char, value):
+        """Handle notifications from non-HID characteristics; a one-byte
+        0-100 value is a good battery candidate."""
+        log.info(f"[BLE] Notify {uuid_str(char.uuid)}: {bytes(value).hex()}")
+        if len(value) == 1:
+            level = int(value[0])
+            if 0 <= level <= 100:
+                session.battery_level = level
+                session.battery_updated = time.time()
+                log.success(
+                    f"[BLE] {self._format_device(session.address)} battery: "
+                    f"{level}% (notify {uuid_str(char.uuid)})")
+
+    async def _run_ble_battery_poller(self):
+        """Periodically refresh battery levels for live BLE sessions."""
+        while True:
+            await asyncio.sleep(BATTERY_POLL_INTERVAL)
+            for session in list(self.sessions.values()):
+                if session.protocol == Protocol.BLE and session.is_alive():
+                    try:
+                        await self._read_ble_battery(session)
+                    except Exception as e:
+                        log.warning(f"[BLE] Battery poll failed for {session.address}: {e}")
 
     async def _ble_initiate(self, window: float, peer: Address = None):
         """Legacy create-connection to `peer`, or to the accept list when
