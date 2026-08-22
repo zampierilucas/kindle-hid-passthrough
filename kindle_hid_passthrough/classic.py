@@ -6,6 +6,9 @@ import asyncio
 from bumble.core import BT_BR_EDR_TRANSPORT, BT_HUMAN_INTERFACE_DEVICE_SERVICE, InvalidStateError, TimeoutError as BumbleTimeoutError
 from bumble.hci import (
     Address,
+    HCI_DIFFERENT_TRANSACTION_COLLISION_ERROR,
+    HCI_LMP_ERROR_TRANSACTION_COLLISION_OR_LL_PROCEDURE_COLLISION_ERROR,
+    HCI_Error,
     HCI_Write_Scan_Enable_Command,
     Role,
 )
@@ -31,6 +34,15 @@ FALLBACK_HID_DESCRIPTOR = bytes([
 
 
 CLASSIC_PEER_CHANNEL_WAIT = 5.0
+
+COLLISION_ERRORS = (
+    HCI_LMP_ERROR_TRANSACTION_COLLISION_OR_LL_PROCEDURE_COLLISION_ERROR,
+    HCI_DIFFERENT_TRANSACTION_COLLISION_ERROR,
+)
+
+
+def _is_collision(e: BaseException) -> bool:
+    return isinstance(e, HCI_Error) and e.error_code in COLLISION_ERRORS
 
 
 class ClassicHIDChannels:
@@ -187,6 +199,7 @@ class ClassicMixin:
             await self._teardown_session(old)
 
         is_peripheral = connection.role != Role.CENTRAL
+        peer_driving = False
 
         if is_peripheral:
             log.info("[Classic] Requesting role switch to central...")
@@ -196,9 +209,10 @@ class ClassicMixin:
                 is_peripheral = False
             except Exception as e:
                 log.warning(f"[Classic] Role switch failed: {errstr(e)}")
+                peer_driving = _is_collision(e)
 
-        if is_peripheral:
-            log.info("[Classic] Still peripheral, leaving security to the central")
+        if is_peripheral or peer_driving:
+            log.info("[Classic] Peer is driving security, standing by")
         elif not connection.is_encrypted:
             log.info("[Classic] Restoring bonding (authenticate + encrypt)...")
             try:
@@ -208,10 +222,13 @@ class ClassicMixin:
                 log.success("[Classic] Bonding restored")
             except Exception as e:
                 log.warning(f"[Classic] Bonding restore failed: {errstr(e)}")
+                peer_driving = _is_collision(e)
+                if peer_driving:
+                    log.info("[Classic] Security collision, the peer is driving; standing by")
 
         channels = session.channels
 
-        if is_peripheral and not channels.intr_channel:
+        if (is_peripheral or peer_driving) and not channels.intr_channel:
             log.info("[Classic] Waiting for the peer to open the HID channels...")
             loop = asyncio.get_running_loop()
             deadline = loop.time() + CLASSIC_PEER_CHANNEL_WAIT
