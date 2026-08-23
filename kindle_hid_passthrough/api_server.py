@@ -108,6 +108,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._handle_connect(param('addr'), param('protocol'))
             case '/disconnect':
                 self._handle_disconnect(param('addr'))
+            case '/lights':
+                self._handle_lights(param('addr'), param('on'))
             case '/discoverable':
                 self._handle_discoverable(param('duration'))
             case '/logs':
@@ -259,6 +261,19 @@ class RequestHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({"ok": False,
                              "error": "Media remote off or Bluetooth stopped"})
+
+    def _handle_lights(self, address, on):
+        """Toggle a controller's lights, remembered across reconnects."""
+        if not address or on is None:
+            self._send_json({"ok": False, "error": "addr and on are required"})
+            return
+        wanted = str(on).lower() in ('1', 'true', 'on', 'yes')
+        try:
+            sent = self._controller.request_set_lights(address, wanted)
+        except Exception as e:
+            self._send_json({"ok": False, "error": f"{type(e).__name__}: {e}"})
+            return
+        self._send_json({"ok": True, "lights": wanted, "sent": sent})
 
     def _handle_logs(self, lines_str):
         log_file = config.log_file

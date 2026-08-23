@@ -326,6 +326,20 @@ class DaemonController:
 
     # ---- Disconnect / Stop ----
 
+    def request_set_lights(self, address, on, timeout=5.0):
+        """From HTTP thread: toggle player lights. Blocks, unlike the others,
+        so the caller can say whether the device got it."""
+        future = asyncio.run_coroutine_threadsafe(
+            self._do_set_lights(address, on), self.loop
+        )
+        return future.result(timeout=timeout)
+
+    async def _do_set_lights(self, address, on):
+        host = self.daemon.host
+        if host is None:
+            raise RuntimeError("daemon is not running")
+        return host.set_lights(address, on)
+
     def request_disconnect(self, suspend=False, address=None):
         """From HTTP thread: drop one connection, or all.
 

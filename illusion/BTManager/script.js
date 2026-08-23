@@ -28,6 +28,7 @@ var BTManager = (function() {
     var pairLogTimer = null;
     var btOn = false;
     var autostartOn = false;
+    var detailLightsOn = null;
     var scanResultCount = 0;
 
     // Currently viewed device in detail overlay
@@ -388,8 +389,11 @@ var BTManager = (function() {
         var battery = conn && typeof conn.battery_level === "number"
             ? conn.battery_level : null;
 
+        var lights = conn && typeof conn.lights === "boolean" ? conn.lights : null;
+
         var key = [isConnected ? "1" : "0", String(hidReady), uhid, inputs,
-                   detailDevice.name, detailDevice.proto, String(battery)].join("|");
+                   detailDevice.name, detailDevice.proto, String(battery),
+                   String(lights)].join("|");
         if (key === detailRenderKey) return;
         detailRenderKey = key;
 
@@ -405,6 +409,16 @@ var BTManager = (function() {
         } else {
             getEl("detailBattery").innerHTML = batteryHtml(battery);
             battRow.style.display = "block";
+        }
+
+        detailLightsOn = lights;
+        var lightsRow = getEl("detailLightsRow");
+        if (lights === null) {
+            lightsRow.style.display = "none";
+        } else {
+            getEl("btnDetailLights").className = lights
+                ? "toggle toggle-secondary on" : "toggle toggle-secondary";
+            lightsRow.style.display = "block";
         }
 
         var hidSection = getEl("detailHid");
@@ -424,6 +438,26 @@ var BTManager = (function() {
                 hidSection.style.display = "block";
             }
         }
+    }
+
+    function toggleDetailLights() {
+        if (!detailDevice || detailLightsOn === null) return;
+        var want = detailLightsOn ? "0" : "1";
+        showMessage(detailLightsOn ? "Turning lights off..." : "Turning lights on...", false);
+        request("/lights?addr=" + encodeURIComponent(detailDevice.addr) + "&on=" + want,
+            function(data, err) {
+                if (err) {
+                    showMessage("Error: " + err, true);
+                    return;
+                }
+                if (!data || !data.ok) {
+                    showMessage(data && data.error ? data.error : "Failed", true);
+                    return;
+                }
+                showMessage(data.lights ? "Lights on" : "Lights off", false);
+                lastStatusJson = "";
+                detailRenderKey = "";
+            });
     }
 
     function hideDeviceDetail() {
@@ -846,6 +880,7 @@ var BTManager = (function() {
     function bindEvents() {
         bindBtn("btnToggle", toggleBluetooth);
         bindBtn("btnAutostart", toggleAutostart);
+        bindBtn("btnDetailLights", toggleDetailLights);
         bindBtn("btnScan", toggleScan);
         bindBtn("btnDiscoverable", startDiscoverable);
         bindBtn("btnPairInfo", function() {
