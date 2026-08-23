@@ -53,6 +53,7 @@ class DeviceSession:
         self.vc_unplug = False
         self.battery_level: Optional[int] = None
         self.battery_updated: Optional[float] = None
+        self.battery_char = None
 
     def is_alive(self) -> bool:
         conn = self.connection
