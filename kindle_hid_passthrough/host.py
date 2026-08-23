@@ -39,12 +39,15 @@ class DeviceConfig:
 
 # Controllers whose indicator lights never settle until a host tells them to.
 # Matched on the device name, since Bluetooth HID hands us no vendor id. The
-# third field is the byte holding the light mask, so the toggle can rewrite it.
+# last two fields are the byte holding the light mask, which the toggle
+# rewrites, and the byte holding the packet counter, or None where there is
+# none.
 DEFAULT_OUTPUT_REPORTS = (
     # Nintendo Joy-Con and Pro Controller. Report 0x01 carries a packet
     # counter, eight neutral rumble bytes, then subcommand 0x30 (player
     # lights) lighting player 1. Left alone they chase all four forever.
-    (('joy-con', 'pro controller'), bytes.fromhex('01000001404000014040' '3001'), 11),
+    (('joy-con', 'pro controller'),
+     bytes.fromhex('01000001404000014040' '3001'), 11, 1),
 )
 
 # Light mask values, low nibble is the lights held solid.
@@ -64,6 +67,7 @@ class DeviceSession:
         self.channels = None
         self.uhid_loop = None
         self.lights_on = None
+        self.report_counter = 0
         self.name = None
         self.report_map: Optional[bytes] = None
         self.hid_reports = []
@@ -206,6 +210,10 @@ class HIDHost(ClassicMixin, BLEMixin):
         characteristic holds the body alone.
         """
         if session.channels:
+            # ponytail: Classic reports True on any write. HIDP DATA is
+            # fire-and-forget, so a device that ignores the report looks the
+            # same as one that took it. Switch to a GET_REPORT read-back if a
+            # controller ever needs the distinction.
             session.channels.send_output_report(payload)
             return True
         if session.peer:
@@ -229,40 +237,52 @@ class HIDHost(ClassicMixin, BLEMixin):
             log.debug(f"Output report not forwarded: {e}")
 
     def _light_entry(self, session: DeviceSession):
-        """This device's built-in light report and the offset of its mask."""
+        """This device's built-in light report, its mask and counter offsets."""
         name = (self._configured_name(session.address) or session.name or '').lower()
-        for names, payload, mask_index in DEFAULT_OUTPUT_REPORTS:
+        for names, payload, mask_index, counter_index in DEFAULT_OUTPUT_REPORTS:
             if any(n in name for n in names):
-                return payload, mask_index
+                return payload, mask_index, counter_index
         return None
 
     @staticmethod
-    def _with_light_mask(payload: bytes, mask_index: int, on: bool) -> bytes:
+    def _build_light_report(session: DeviceSession, entry, on: bool) -> bytes:
+        """Set the light mask, and stamp the packet counter where there is one.
+
+        Nintendo firmware expects that counter to advance, and ignores a
+        subcommand that repeats the previous value.
+        """
+        payload, mask_index, counter_index = entry
         out = bytearray(payload)
         out[mask_index] = LIGHTS_ON if on else LIGHTS_OFF
+        if counter_index is not None:
+            out[counter_index] = session.report_counter & 0x0F
+            session.report_counter += 1
         return bytes(out)
 
-    def set_lights(self, address: str, on: bool) -> bool:
-        """Toggle a controller's lights, remembered across reconnects.
+    def set_lights(self, address: str, on: bool):
+        """Toggle a controller's lights. Returns (sent, saved).
 
-        Returns whether the change also went out to the device now, which it
-        cannot when the controller is not connected.
+        Nothing is written until the request is known to be answerable, so a
+        device with no lights never leaves a stale option behind.
         """
         address = normalize_addr(address)
-        config.set_device_option(address, 'lights', 'on' if on else 'off')
-
         session = self.sessions.get(address)
         if session is None:
-            return False
+            raise ValueError("device is not connected")
+        if config.get_device_options(address).get('report'):
+            raise ValueError("device has a configured report=, edit that instead")
 
         entry = self._light_entry(session)
         if entry is None:
             raise ValueError("device has no controllable lights")
 
+        saved = config.set_device_option(address, 'lights', 'on' if on else 'off')
+        if not saved:
+            log.warning(f"No devices.conf line for {address}, lights not remembered")
+
         session.lights_on = on
-        payload, mask_index = entry
-        return self.send_output_report(
-            session, self._with_light_mask(payload, mask_index, on))
+        sent = self.send_output_report(session, self._build_light_report(session, entry, on))
+        return sent, saved
 
     def send_init_output_report(self, session: DeviceSession):
         """Settle the device's lights once it is connected, and on reconnect.
@@ -284,7 +304,8 @@ class HIDHost(ClassicMixin, BLEMixin):
             entry = self._light_entry(session)
             if entry is None:
                 return
-            payload = self._with_light_mask(*entry, options.get('lights') != 'off')
+            payload = self._build_light_report(session, entry,
+                                               options.get('lights') != 'off')
 
         if not payload:
             return

@@ -264,16 +264,16 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _handle_lights(self, address, on):
         """Toggle a controller's lights, remembered across reconnects."""
-        if not address or on is None:
-            self._send_json({"ok": False, "error": "addr and on are required"})
+        if not address or on not in ('0', '1'):
+            self._send_json({"ok": False, "error": "addr and on=0|1 are required"})
             return
         wanted = on == '1'
         try:
-            sent = self._controller.request_set_lights(address, wanted)
+            sent, saved = self._controller.request_set_lights(address, wanted)
         except Exception as e:
             self._send_json({"ok": False, "error": f"{type(e).__name__}: {e}"})
             return
-        self._send_json({"ok": True, "lights": wanted, "sent": sent})
+        self._send_json({"ok": True, "lights": wanted, "sent": sent, "saved": saved})
 
     def _handle_logs(self, lines_str):
         log_file = config.log_file

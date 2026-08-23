@@ -29,6 +29,7 @@ var BTManager = (function() {
     var btOn = false;
     var autostartOn = false;
     var detailLightsOn = null;
+    var lightsBusy = false;
     var scanResultCount = 0;
 
     // Currently viewed device in detail overlay
@@ -411,7 +412,7 @@ var BTManager = (function() {
             battRow.style.display = "block";
         }
 
-        detailLightsOn = lights;
+        if (!lightsBusy) detailLightsOn = lights;
         var lightsRow = getEl("detailLightsRow");
         if (lights === null) {
             lightsRow.style.display = "none";
@@ -441,11 +442,18 @@ var BTManager = (function() {
     }
 
     function toggleDetailLights() {
-        if (!detailDevice || detailLightsOn === null) return;
+        if (!detailDevice || detailLightsOn === null || lightsBusy) return;
         var want = detailLightsOn ? "0" : "1";
-        showMessage(detailLightsOn ? "Turning lights off..." : "Turning lights on...", false);
+        lightsBusy = true;
+        detailLightsOn = !detailLightsOn;
+        getEl("btnDetailLights").className = detailLightsOn
+            ? "toggle toggle-secondary on" : "toggle toggle-secondary";
+        showMessage(want === "1" ? "Turning lights on..." : "Turning lights off...", false);
         request("/lights?addr=" + encodeURIComponent(detailDevice.addr) + "&on=" + want,
             function(data, err) {
+                lightsBusy = false;
+                lastStatusJson = "";
+                detailRenderKey = "";
                 if (err) {
                     showMessage("Error: " + err, true);
                     return;
@@ -454,9 +462,13 @@ var BTManager = (function() {
                     showMessage(data && data.error ? data.error : "Failed", true);
                     return;
                 }
-                showMessage(data.lights ? "Lights on" : "Lights off", false);
-                lastStatusJson = "";
-                detailRenderKey = "";
+                if (!data.sent) {
+                    showMessage("Controller did not take it", true);
+                    return;
+                }
+                showMessage(data.lights
+                    ? (data.saved ? "Lights on" : "Lights on until reconnect")
+                    : (data.saved ? "Lights off" : "Lights off until reconnect"), false);
             });
     }
 

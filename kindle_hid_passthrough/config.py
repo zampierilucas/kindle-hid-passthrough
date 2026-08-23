@@ -69,7 +69,7 @@ def split_device_options(text: str):
         key, sep, value = words[-1].partition('=')
         if not sep or key.lower() not in DEVICE_OPTION_KEYS:
             break
-        options[key.lower()] = value
+        options[key.lower()] = value.lower()
         words.pop()
     return ' '.join(words), options
 
@@ -168,7 +168,6 @@ class Config:
             default_name = self._kindle_defaults.model_name
         self.device_name = self._get('device', 'name', default_name)
         self.device_address = self._get('device', 'address', 'F0:F0:F0:F0:F0:F0')
-
 
         # Protocol
         protocol_str = self._get('protocol', 'type', 'ble').lower()
@@ -390,19 +389,20 @@ class Config:
         for the indicator lights and mode switches a controller only settles
         on when a host asks. 'lights' is the BTManager toggle, on or off.
         """
-        if not os.path.exists(self.devices_config_file):
-            return {}
-
         addr_norm = normalize_addr(address)
-        with open(self.devices_config_file, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                parts = line.split(None, 2)
-                if parts[0] == '*' or normalize_addr(parts[0]) != addr_norm:
-                    continue
-                return split_device_options(parts[2])[1] if len(parts) > 2 else {}
+        try:
+            with open(self.devices_config_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split(None, 2)
+                    if parts[0] == '*' or normalize_addr(parts[0]) != addr_norm:
+                        continue
+                    return split_device_options(parts[2])[1] if len(parts) > 2 else {}
+        except Exception as e:
+            # Never let a config read take down a working session.
+            logging.getLogger(__name__).warning(f"Reading device options failed: {e}")
         return {}
 
     def set_device_option(self, address: str, key: str, value) -> bool:
@@ -431,7 +431,10 @@ class Config:
                     options.pop(key, None)
                 else:
                     options[key] = str(value)
-                fields = parts[:2]
+                # An option cannot sit in the protocol slot, so a line that
+                # relied on the default protocol gets it written out.
+                protocol = parts[1] if len(parts) > 1 else self.protocol.value
+                fields = [parts[0], protocol]
                 if name:
                     fields.append(name)
                 fields.extend(f"{k}={v}" for k, v in sorted(options.items()))
@@ -441,12 +444,24 @@ class Config:
             return False
 
         try:
-            with open(self.devices_config_file, 'w') as f:
-                f.writelines(lines)
+            self._write_devices_atomically(lines)
             return True
         except Exception as e:
             logger.error(f"Failed to write {key} for {addr_norm}: {e}")
             return False
+
+    def _write_devices_atomically(self, lines):
+        """Replace devices.conf in one step.
+
+        Truncating in place would lose every paired device if power went at
+        the wrong moment, and lets a concurrent reader cache a partial file.
+        """
+        tmp = self.devices_config_file + '.tmp'
+        with open(tmp, 'w') as f:
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.devices_config_file)
 
     def get_all_devices(self) -> list:
         """Load all devices from devices.conf.
