@@ -267,7 +267,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not address or on is None:
             self._send_json({"ok": False, "error": "addr and on are required"})
             return
-        wanted = str(on).lower() in ('1', 'true', 'on', 'yes')
+        wanted = on == '1'
         try:
             sent = self._controller.request_set_lights(address, wanted)
         except Exception as e:
