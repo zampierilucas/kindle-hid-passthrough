@@ -228,27 +228,8 @@ class HIDHost(ClassicMixin, BLEMixin):
         except Exception as e:
             log.debug(f"Output report not forwarded: {e}")
 
-    @staticmethod
-    def _configured_report(address: str) -> Optional[bytes]:
-        """A raw 'report=' hex option from devices.conf, if it parses."""
-        raw = config.get_device_options(address).get('report')
-        if not raw:
-            return None
-        try:
-            return bytes.fromhex(raw.replace(':', '')) or None
-        except ValueError:
-            log.warning(f"Bad hex in report= for {address}")
-            return None
-
     def _light_entry(self, session: DeviceSession):
-        """This device's built-in light report and mask offset, or None.
-
-        A raw report configured for the address wins outright, and its bytes
-        mean whatever the user meant, so the toggle stays out of its way.
-        """
-        if self._configured_report(session.address):
-            return None
-
+        """This device's built-in light report and the offset of its mask."""
         name = (self._configured_name(session.address) or session.name or '').lower()
         for names, payload, mask_index in DEFAULT_OUTPUT_REPORTS:
             if any(n in name for n in names):
@@ -260,24 +241,6 @@ class HIDHost(ClassicMixin, BLEMixin):
         out = bytearray(payload)
         out[mask_index] = LIGHTS_ON if on else LIGHTS_OFF
         return bytes(out)
-
-    def _init_output_report(self, session: DeviceSession) -> Optional[bytes]:
-        """The report to send this device on connect, if any.
-
-        A configured one always wins, so a controller we guess wrong about can
-        be corrected without a code change.
-        """
-        configured = self._configured_report(session.address)
-        if configured:
-            return configured
-
-        entry = self._light_entry(session)
-        if entry is None:
-            return None
-
-        payload, mask_index = entry
-        on = config.get_device_options(session.address).get('lights', 'on') != 'off'
-        return self._with_light_mask(payload, mask_index, on)
 
     def set_lights(self, address: str, on: bool) -> bool:
         """Toggle a controller's lights, remembered across reconnects.
@@ -302,8 +265,27 @@ class HIDHost(ClassicMixin, BLEMixin):
             session, self._with_light_mask(payload, mask_index, on))
 
     def send_init_output_report(self, session: DeviceSession):
-        """Settle the device's lights once it is connected, and on reconnect."""
-        payload = self._init_output_report(session)
+        """Settle the device's lights once it is connected, and on reconnect.
+
+        A raw 'report=' wins over the built-in table, and its bytes mean
+        whatever the user meant, so the toggle stays out of its way.
+        """
+        options = config.get_device_options(session.address)
+        raw = options.get('report')
+        entry = None
+
+        if raw:
+            try:
+                payload = bytes.fromhex(raw.replace(':', ''))
+            except ValueError:
+                log.warning(f"Bad hex in report= for {session.address}")
+                return
+        else:
+            entry = self._light_entry(session)
+            if entry is None:
+                return
+            payload = self._with_light_mask(*entry, options.get('lights') != 'off')
+
         if not payload:
             return
         try:
@@ -318,7 +300,6 @@ class HIDHost(ClassicMixin, BLEMixin):
         # Only offer the toggle once the report has actually gone out. A name
         # can match the table while the device has no such report, and a
         # control that does nothing is worse than no control.
-        entry = self._light_entry(session)
         if entry:
             session.lights_on = payload[entry[1]] != LIGHTS_OFF
 
