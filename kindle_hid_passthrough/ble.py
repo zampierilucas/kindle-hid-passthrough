@@ -439,6 +439,7 @@ class BLEMixin:
         self._create_uhid_device(session)
         await self._subscribe_to_ble_reports(session)
         await self._ble_activate_hid_service(session)
+        self.send_init_output_report(session)
         self._track_task(asyncio.create_task(self._read_ble_battery(session)))
 
     async def _read_ble_device_name(self, session):

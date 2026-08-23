@@ -37,6 +37,16 @@ class DeviceConfig:
     name: Optional[str] = None
 
 
+# Controllers whose indicator lights never settle until a host tells them to.
+# Matched on the device name, since Bluetooth HID hands us no vendor id.
+DEFAULT_OUTPUT_REPORTS = (
+    # Nintendo Joy-Con and Pro Controller. Report 0x01 carries a packet
+    # counter, eight neutral rumble bytes, then subcommand 0x30 (player
+    # lights) lighting player 1. Left alone they chase all four forever.
+    (('joy-con', 'pro controller'), bytes.fromhex('01000001404000014040' '3001')),
+)
+
+
 class DeviceSession:
     """Live state for one connected device, keyed by normalized address."""
 
@@ -179,29 +189,65 @@ class HIDHost(ClassicMixin, BLEMixin):
             connections += self.media_remote.state_list()
         return {"connected": bool(connections), "connections": connections}
 
-    def _on_uhid_output(self, session: DeviceSession):
-        """Pass a hidraw write on to the device it was written for.
+    def send_output_report(self, session: DeviceSession, payload: bytes) -> bool:
+        """Send one output report to a connected device, True if it went out.
 
         Classic takes the whole payload on the interrupt channel. BLE splits
-        it: hidraw always prefixes the report id, while HID over GATT carries
-        the id in the Report Reference descriptor and the characteristic holds
-        the body alone.
+        it, because hidraw always prefixes the report id while HID over GATT
+        carries the id in the Report Reference descriptor and the
+        characteristic holds the body alone.
         """
+        if session.channels:
+            session.channels.send_output_report(payload)
+            return True
+        if session.peer:
+            char = session.output_reports.get(payload[0])
+            if char is None:
+                log.debug(f"No BLE output report {payload[0]}")
+                return False
+            asyncio.ensure_future(
+                session.peer.write_value(char, payload[1:], with_response=False))
+            return True
+        return False
+
+    def _on_uhid_output(self, session: DeviceSession):
+        """Pass a hidraw write on to the device it was written for."""
         payload = session.uhid_device.read_output_report() if session.uhid_device else None
         if not payload:
             return
         try:
-            if session.channels:
-                session.channels.send_output_report(payload)
-            elif session.peer:
-                char = session.output_reports.get(payload[0])
-                if char is None:
-                    log.debug(f"No BLE output report {payload[0]}")
-                    return
-                asyncio.ensure_future(
-                    session.peer.write_value(char, payload[1:], with_response=False))
+            self.send_output_report(session, payload)
         except Exception as e:
             log.debug(f"Output report not forwarded: {e}")
+
+    def _init_output_report(self, session: DeviceSession) -> Optional[bytes]:
+        """The report to send this device on connect, if any.
+
+        A configured one always wins, so a controller we guess wrong about can
+        be corrected without a code change.
+        """
+        configured = config.output_reports.get(session.address)
+        if configured:
+            return configured
+
+        name = (self._configured_name(session.address) or session.name or '').lower()
+        for names, payload in DEFAULT_OUTPUT_REPORTS:
+            if any(n in name for n in names):
+                return payload
+        return None
+
+    def send_init_output_report(self, session: DeviceSession):
+        """Settle the device's lights once it is connected, and on reconnect."""
+        payload = self._init_output_report(session)
+        if not payload:
+            return
+        try:
+            if self.send_output_report(session, payload):
+                log.info(f"Sent init report {payload.hex()}")
+            else:
+                log.info(f"Device takes no report {payload[0]}, init skipped")
+        except Exception as e:
+            log.warning(f"Init report failed: {e}")
 
     def _parse_devices(self):
         """Parse devices from config and group by protocol."""

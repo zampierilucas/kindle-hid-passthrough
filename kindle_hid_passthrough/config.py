@@ -116,7 +116,7 @@ class Config:
         self._determine_base_path()
 
         config_file = os.path.join(self.base_path, 'config.ini')
-        self._parser = configparser.ConfigParser()
+        self._parser = configparser.ConfigParser(delimiters=('=',))
 
         if os.path.exists(config_file):
             self._parser.read(config_file)
@@ -147,6 +147,8 @@ class Config:
             default_name = self._kindle_defaults.model_name
         self.device_name = self._get('device', 'name', default_name)
         self.device_address = self._get('device', 'address', 'F0:F0:F0:F0:F0:F0')
+
+        self.output_reports = self._load_output_reports()
 
         # Protocol
         protocol_str = self._get('protocol', 'type', 'ble').lower()
@@ -360,6 +362,28 @@ class Config:
             button_mapper.register_device(addr_norm, name)
         except Exception as e:
             logger.error(f"Failed to save device: {e}")
+
+    def _load_output_reports(self) -> dict:
+        """Read [output_reports], one hex report per device address.
+
+        Sent once the device is connected, and again on every reconnect, for
+        the player lights and mode switches a controller only settles on when
+        a host asks. Overrides the built-in defaults.
+        """
+        reports = {}
+        if not self._parser.has_section('output_reports'):
+            return reports
+
+        logger = logging.getLogger(__name__)
+        for addr, value in self._parser.items('output_reports'):
+            try:
+                payload = bytes.fromhex(value.replace(':', '').replace(' ', ''))
+            except ValueError:
+                logger.warning(f"Bad hex in output_reports for {addr}")
+                continue
+            if payload:
+                reports[normalize_addr(addr)] = payload
+        return reports
 
     def get_all_devices(self) -> list:
         """Load all devices from devices.conf.
