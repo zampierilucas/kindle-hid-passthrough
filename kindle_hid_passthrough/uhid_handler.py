@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Virtual HID devices via Linux UHID (/dev/uhid)."""
 
+import asyncio
 import logging
 import os
 import struct
+import time
+from collections import deque
 from typing import Optional
 
 __all__ = ['UHIDDevice', 'UHIDError', 'Bus', 'sanitize_digitizer']
@@ -129,6 +132,13 @@ UHID_INPUT2 = 12
 HID_MAX_DESCRIPTOR_SIZE = 4096
 UHID_DATA_MAX = 4096
 
+# Nothing has a freshly created input node open yet, and evdev only buffers for
+# readers that are already attached, so a report written in that gap is lost.
+# Hold reports for this long instead, then write them: X takes about half a
+# second to open a new node on a Kindle Basic 4.
+REPLAY_WINDOW = 1.0
+PENDING_REPORTS = 16
+
 
 class Bus:
     """Bus types for HID devices."""
@@ -202,10 +212,14 @@ class UHIDDevice:
 
         self._fd: Optional[int] = None
         self._created = False
+        self._created_at = 0.0
+        self._pending = deque(maxlen=PENDING_REPORTS)
+        self._flush_handle = None
         self.input_paths: list = []
 
         self._open_uhid()
         self._create_device()
+        self._schedule_flush()
 
     def _open_uhid(self):
         """Open /dev/uhid file descriptor."""
@@ -251,12 +265,39 @@ class UHIDDevice:
             if written != len(event):
                 raise UHIDError(f"Incomplete write: {written} != {len(event)}")
             self._created = True
+            self._created_at = time.monotonic()
             logger.info(f"Created UHID device: {self.name} "
                        f"(vendor=0x{self.vendor:04x}, product=0x{self.product:04x}, "
                        f"rd_size={len(self.report_descriptor)})")
 
         except OSError as e:
             raise UHIDError(f"Failed to create device: {e}")
+
+    def _schedule_flush(self):
+        """Write the held reports once a reader has had time to attach."""
+        try:
+            self._flush_handle = asyncio.get_event_loop().call_later(
+                REPLAY_WINDOW, self._flush_pending)
+        except RuntimeError:
+            logger.debug("No event loop, reports will flush on the next write")
+
+    @property
+    def is_holding(self) -> bool:
+        """Whether the node is still too new for a report to reach a reader."""
+        return time.monotonic() - self._created_at < REPLAY_WINDOW
+
+    def _flush_pending(self):
+        """Write the reports held while nothing could read them."""
+        if not self._pending:
+            return
+        held = list(self._pending)
+        self._pending.clear()
+        logger.info(f"Writing {len(held)} report(s) held while the node was new")
+        for data in held:
+            try:
+                self._write_input(data)
+            except UHIDError as e:
+                logger.warning(f"Held report dropped: {e}")
 
     def discover_input_paths(self):
         """Find /dev/input/eventX paths for this UHID device.
@@ -305,6 +346,15 @@ class UHIDDevice:
         if len(data) > UHID_DATA_MAX:
             raise UHIDError(f"Input data too large: {len(data)} > {UHID_DATA_MAX}")
 
+        if self.is_holding:
+            self._pending.append(data)
+            logger.debug("Held report, the input node is too new to be read")
+            return
+
+        self._flush_pending()
+        self._write_input(data)
+
+    def _write_input(self, data: bytes):
         # Pack UHID_INPUT2 event
         # Format: type(L) size(H) data(4096s)
         event = struct.pack(
@@ -324,6 +374,10 @@ class UHIDDevice:
         """Destroy the virtual device and close the file descriptor."""
         if self._fd is None:
             return
+
+        if self._flush_handle:
+            self._flush_handle.cancel()
+            self._flush_handle = None
 
         if self._created:
             try:

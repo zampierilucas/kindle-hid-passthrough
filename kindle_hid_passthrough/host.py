@@ -2,6 +2,8 @@
 """HID Host — runs BLE + Classic handlers on a single Bumble device."""
 
 import asyncio
+import time
+from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -24,7 +26,14 @@ from logging_utils import log
 from media_remote import MEDIA_REMOTE_COD, MediaRemote
 from pairing import create_keystore, create_pairing_config
 from transport import create_bumble_device
-from uhid_handler import Bus, UHIDDevice, descriptor_is_pointer, sanitize_digitizer
+from uhid_handler import (
+    PENDING_REPORTS,
+    REPLAY_WINDOW,
+    Bus,
+    UHIDDevice,
+    descriptor_is_pointer,
+    sanitize_digitizer,
+)
 
 __all__ = ['HIDHost']
 
@@ -53,6 +62,7 @@ class DeviceSession:
         self.uhid_device = None
         self.is_pointer = False
         self.last_report = None
+        self.pending_reports = deque(maxlen=PENDING_REPORTS)
         self.setup_task = None
         self.closed = False
         self.teardown_done = asyncio.Event()
@@ -567,6 +577,22 @@ class HIDHost(ClassicMixin, BLEMixin):
                 session.uhid_device.send_input(data)
             except Exception as e:
                 log.warning(f"UHID send failed: {e}")
+        else:
+            session.pending_reports.append((time.monotonic(), data))
+
+    def _replay_pending(self, session: DeviceSession):
+        """Write the reports the peer sent before the input node existed."""
+        cutoff = time.monotonic() - REPLAY_WINDOW
+        held = [data for stamp, data in session.pending_reports if stamp >= cutoff]
+        session.pending_reports.clear()
+        if not held or not session.uhid_device:
+            return
+        log.info(f"Replaying {len(held)} report(s) sent before the input node existed")
+        for data in held:
+            try:
+                session.uhid_device.send_input(data)
+            except Exception as e:
+                log.warning(f"UHID send failed: {e}")
 
     def _load_cached_descriptor(self, session: DeviceSession) -> bool:
         """Load report descriptor and device name from cache. Returns True if found."""
@@ -601,6 +627,7 @@ class HIDHost(ClassicMixin, BLEMixin):
                 uniq=session.address,
             )
             log.success(f"UHID device created: {name}")
+            self._replay_pending(session)
             asyncio.get_event_loop().call_later(
                 0.5, session.uhid_device.discover_input_paths)
             session.is_pointer = descriptor_is_pointer(descriptor)
