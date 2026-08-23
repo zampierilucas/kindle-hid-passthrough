@@ -53,6 +53,27 @@ def normalize_addr(address: str) -> str:
     return address.split('/')[0].upper()
 
 
+DEVICE_OPTION_KEYS = ('lights', 'report')
+
+
+def split_device_options(text: str):
+    """Split a devices.conf name field into the name and its trailing options.
+
+    Only known keys are taken, and only from the end, so a device whose name
+    contains an '=' keeps it and every line written before options existed
+    still parses the same way.
+    """
+    words = text.split()
+    options = {}
+    while words:
+        key, sep, value = words[-1].partition('=')
+        if not sep or key.lower() not in DEVICE_OPTION_KEYS:
+            break
+        options[key.lower()] = value
+        words.pop()
+    return ' '.join(words), options
+
+
 def clean_device_name(name) -> str:
     """Decode a device name, dropping padding and unprintable characters.
 
@@ -116,7 +137,7 @@ class Config:
         self._determine_base_path()
 
         config_file = os.path.join(self.base_path, 'config.ini')
-        self._parser = configparser.ConfigParser(delimiters=('=',))
+        self._parser = configparser.ConfigParser()
 
         if os.path.exists(config_file):
             self._parser.read(config_file)
@@ -148,7 +169,6 @@ class Config:
         self.device_name = self._get('device', 'name', default_name)
         self.device_address = self._get('device', 'address', 'F0:F0:F0:F0:F0:F0')
 
-        self.output_reports = self._load_output_reports()
 
         # Protocol
         protocol_str = self._get('protocol', 'type', 'ble').lower()
@@ -363,27 +383,70 @@ class Config:
         except Exception as e:
             logger.error(f"Failed to save device: {e}")
 
-    def _load_output_reports(self) -> dict:
-        """Read [output_reports], one hex report per device address.
+    def get_device_options(self, address: str) -> dict:
+        """Per-device options from that device's devices.conf line.
 
-        Sent once the device is connected, and again on every reconnect, for
-        the player lights and mode switches a controller only settles on when
-        a host asks. Overrides the built-in defaults.
+        'report' is a hex output report sent on connect and every reconnect,
+        for the indicator lights and mode switches a controller only settles
+        on when a host asks. 'lights' is the BTManager toggle, on or off.
         """
-        reports = {}
-        if not self._parser.has_section('output_reports'):
-            return reports
+        if not os.path.exists(self.devices_config_file):
+            return {}
 
+        addr_norm = normalize_addr(address)
+        with open(self.devices_config_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(None, 2)
+                if parts[0] == '*' or normalize_addr(parts[0]) != addr_norm:
+                    continue
+                return split_device_options(parts[2])[1] if len(parts) > 2 else {}
+        return {}
+
+    def set_device_option(self, address: str, key: str, value) -> bool:
+        """Set or clear one option on a device's line. None clears it."""
         logger = logging.getLogger(__name__)
-        for addr, value in self._parser.items('output_reports'):
-            try:
-                payload = bytes.fromhex(value.replace(':', '').replace(' ', ''))
-            except ValueError:
-                logger.warning(f"Bad hex in output_reports for {addr}")
-                continue
-            if payload:
-                reports[normalize_addr(addr)] = payload
-        return reports
+        if key not in DEVICE_OPTION_KEYS:
+            raise ValueError(f"unknown device option {key}")
+        if not os.path.exists(self.devices_config_file):
+            return False
+
+        addr_norm = normalize_addr(address)
+        lines = []
+        found = False
+        with open(self.devices_config_file, 'r') as f:
+            for line in f:
+                stripped = line.strip()
+                parts = stripped.split(None, 2)
+                if (not stripped or stripped.startswith('#') or parts[0] == '*'
+                        or normalize_addr(parts[0]) != addr_norm):
+                    lines.append(line)
+                    continue
+
+                found = True
+                name, options = split_device_options(parts[2]) if len(parts) > 2 else ('', {})
+                if value is None:
+                    options.pop(key, None)
+                else:
+                    options[key] = str(value)
+                fields = parts[:2]
+                if name:
+                    fields.append(name)
+                fields.extend(f"{k}={v}" for k, v in sorted(options.items()))
+                lines.append(' '.join(fields) + '\n')
+
+        if not found:
+            return False
+
+        try:
+            with open(self.devices_config_file, 'w') as f:
+                f.writelines(lines)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to write {key} for {addr_norm}: {e}")
+            return False
 
     def get_all_devices(self) -> list:
         """Load all devices from devices.conf.
@@ -395,6 +458,9 @@ class Config:
             ADDRESS classic DeviceName # With device name
             # comment                  # Ignored
             * classic                  # Wildcard - accept any device
+
+        Trailing 'lights=off' or 'report=<hex>' tokens are options, not part
+        of the name. See get_device_options.
 
         Returns:
             List of tuples (address, protocol, name). Name may be None.
@@ -410,7 +476,8 @@ class Config:
                     parts = line.split(None, 2)  # Split into max 3 parts
                     address = parts[0] if parts[0] == '*' else normalize_addr(parts[0])
                     protocol = self._parse_protocol(parts[1]) if len(parts) > 1 else self.protocol
-                    name = (clean_device_name(parts[2]) or None) if len(parts) > 2 else None
+                    name_field = split_device_options(parts[2])[0] if len(parts) > 2 else ''
+                    name = clean_device_name(name_field) or None
                     devices.append((address, protocol, name))
 
         return devices

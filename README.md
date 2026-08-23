@@ -161,10 +161,14 @@ tail -f /var/log/hid_passthrough.log
 Paired devices are stored in `devices.conf`:
 
 ```bash
-# Format: ADDRESS PROTOCOL [NAME]
+# Format: ADDRESS PROTOCOL [NAME] [OPTIONS]
 98:B9:EA:01:67:68/P classic Xbox Wireless Controller
 5C:2B:3E:50:4F:04/P ble BLE-M3
+E8:1A:5C:03:22:9F/P classic Joy-Con (R) lights=off
+AA:BB:CC:DD:EE:FF/P classic My Gamepad report=010000014040000140403001
 ```
+
+**Device options**: `lights=on|off` toggles a controller's indicator lights, the same setting as the Lights switch on the device page in BTManager. `report=<hex>` sends a raw output report when the device connects and on every reconnect, for controllers not handled out of the box. Joy-Con and Pro Controller need neither.
 
 **Multi-device support**: Every configured device connects and stays connected at the same time, across both protocols. Sessions are tracked per address, so a keyboard over Classic and a mouse over BLE (or several of each) work together.
 

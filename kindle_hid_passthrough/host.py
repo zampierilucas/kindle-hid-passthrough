@@ -228,13 +228,25 @@ class HIDHost(ClassicMixin, BLEMixin):
         except Exception as e:
             log.debug(f"Output report not forwarded: {e}")
 
+    @staticmethod
+    def _configured_report(address: str) -> Optional[bytes]:
+        """A raw 'report=' hex option from devices.conf, if it parses."""
+        raw = config.get_device_options(address).get('report')
+        if not raw:
+            return None
+        try:
+            return bytes.fromhex(raw.replace(':', '')) or None
+        except ValueError:
+            log.warning(f"Bad hex in report= for {address}")
+            return None
+
     def _light_entry(self, session: DeviceSession):
         """This device's built-in light report and mask offset, or None.
 
         A raw report configured for the address wins outright, and its bytes
         mean whatever the user meant, so the toggle stays out of its way.
         """
-        if config.output_reports.get(session.address):
+        if self._configured_report(session.address):
             return None
 
         name = (self._configured_name(session.address) or session.name or '').lower()
@@ -255,7 +267,7 @@ class HIDHost(ClassicMixin, BLEMixin):
         A configured one always wins, so a controller we guess wrong about can
         be corrected without a code change.
         """
-        configured = config.output_reports.get(session.address)
+        configured = self._configured_report(session.address)
         if configured:
             return configured
 
@@ -264,7 +276,7 @@ class HIDHost(ClassicMixin, BLEMixin):
             return None
 
         payload, mask_index = entry
-        on = self.device_cache.read(session.address).get('lights', True)
+        on = config.get_device_options(session.address).get('lights', 'on') != 'off'
         return self._with_light_mask(payload, mask_index, on)
 
     def set_lights(self, address: str, on: bool) -> bool:
@@ -274,7 +286,7 @@ class HIDHost(ClassicMixin, BLEMixin):
         cannot when the controller is not connected.
         """
         address = normalize_addr(address)
-        self.device_cache.update(address, {'lights': on})
+        config.set_device_option(address, 'lights', 'on' if on else 'off')
 
         session = self.sessions.get(address)
         if session is None:

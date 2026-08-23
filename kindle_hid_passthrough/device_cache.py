@@ -86,21 +86,6 @@ class DeviceCache:
             logger.warning(f"Failed to save cache for {address}: {e}")
             return False
 
-    def read(self, address: str) -> Dict:
-        """Raw cache contents, without the report_map check load() applies."""
-        try:
-            with open(self._get_cache_path(address), 'r') as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-
-    def update(self, address: str, fields: Dict) -> bool:
-        """Merge fields into the cache, so a later connect does not drop them."""
-        data = self.read(address)
-        data.update(fields)
-        return self.save(address, data)
-
     def clear(self, address: Optional[str] = None) -> int:
         """Clear cache for specific device or all devices.
 
