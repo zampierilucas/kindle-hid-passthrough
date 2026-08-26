@@ -277,6 +277,23 @@ class BrcmChip(BtChip):
         # Settle after wake before the first HCI command, else HCI Reset times out.
         time.sleep(POST_WAKE_SETTLE)
 
+    def on_ready(self):
+        """Hand the chip back to bluesleep now that bring-up is done.
+
+        pre_open() turns bluesleep off so the chip is provably awake for the
+        first HCI Reset (#106), but leaving it off for the whole session tears
+        down the HOST_WAKE IRQ, so nothing pulls the SoC out of idle ahead of
+        an incoming report and the first press after an idle gap is late
+        (#225). The latency hold stays for the wake the IRQ cannot cover.
+        """
+        try:
+            with open(BT_SLEEP_PROTO_PATH, 'w') as f:
+                f.write('1')
+        except OSError as e:
+            log.warning(f"Could not re-enable bluesleep: {e}")
+            return
+        log.info(f"bluesleep re-enabled, HOST_WAKE armed ({self._sleep_state()})")
+
     def on_transport_close(self):
         self._latency.release()
 
