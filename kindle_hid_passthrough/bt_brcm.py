@@ -66,17 +66,22 @@ def _wait_for_bsa():
     return False
 
 
+def _thaw_btd():
+    """Undo the SIGSTOP the handoff left on btd."""
+    for pid in _pgrep_x('btd'):
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except OSError:
+            pass
+
+
 def _recover_btd():
     """Unfreeze and restart btd so it can respawn bsa_server.
 
     A btd left frozen by a prior handoff makes `initctl restart` hang, so
     SIGCONT it first.
     """
-    for pid in _pgrep_x('btd'):
-        try:
-            os.kill(pid, signal.SIGCONT)
-        except OSError:
-            pass
+    _thaw_btd()
     run(['initctl', 'restart', 'btd'])
     time.sleep(2.0)
     run(BTENABLE_LIPC)
@@ -275,6 +280,11 @@ class BrcmChip(BtChip):
         with self._power_lock:
             self._warm = False
             self._latency.release()
+            # Hand btd back before anything else. Frozen it can neither
+            # respawn bsa_server nor answer BTenable, so a chip powered off
+            # while btd is stopped never warms again and only a reboot
+            # clears it. The restart below hangs on a frozen btd too.
+            _thaw_btd()
             try:
                 if open(BT_ENABLE_PATH).read().strip() == '0':
                     return
