@@ -99,6 +99,10 @@ def _warm_up_chip():
         log.info("bsa_server already running; BCM chip is warm")
         return True
 
+    # BTenable goes nowhere while btd is stopped, and a prior handoff may have
+    # left it that way, so give it back before asking rather than after the
+    # 12s wait below has already been spent.
+    _thaw_btd()
     log.info("Warming BCM chip via btfd (BTenable)...")
     run(BTENABLE_LIPC)
     if _wait_for_bsa():
