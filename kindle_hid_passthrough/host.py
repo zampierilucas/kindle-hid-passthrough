@@ -133,10 +133,6 @@ class DeviceSession:
                 if self.uhid_loop and self.uhid_device.fd is not None:
                     self.uhid_loop.remove_reader(self.uhid_device.fd)
                     self.uhid_loop = None
-                try:
-                    self.uhid_device.destroy()
-                except Exception:
-                    pass
                 self.uhid_device = None
             if self.channels:
                 if self.is_alive():
@@ -190,6 +186,7 @@ class HIDHost(ClassicMixin, BLEMixin):
 
         self.keystore = create_keystore(config.pairing_keys_file)
         self.device_cache = DeviceCache(config.cache_dir)
+        self._uhid_nodes: dict = {}
         self.media_remote = (MediaRemote(self._notify_sessions_changed)
                              if config.media_remote_enabled else None)
         self._discoverable_task = None
@@ -347,6 +344,13 @@ class HIDHost(ClassicMixin, BLEMixin):
                 self.ble_devices.append(dev)
 
         log.info(f"Devices: {len(self.classic_devices)} Classic, {len(self.ble_devices)} BLE")
+
+        configured = {normalize_addr(d.address)
+                      for d in self.classic_devices + self.ble_devices}
+        for address in list(self._uhid_nodes):
+            if normalize_addr(address) not in configured and address not in self.sessions:
+                log.info(f"Removing UHID node for unconfigured {address}")
+                self._destroy_uhid_node(address)
 
     async def start(self, pairing: bool = False):
         """Initialize the Bumble device with both protocols."""
@@ -798,8 +802,32 @@ class HIDHost(ClassicMixin, BLEMixin):
             return True
         return False
 
+    def _destroy_uhid_node(self, address: str):
+        """Drop the node kept for an address."""
+        node = self._uhid_nodes.pop(address, None)
+        if not node:
+            return
+        if node.fd is not None:
+            try:
+                asyncio.get_event_loop().remove_reader(node.fd)
+            except Exception:
+                pass
+        try:
+            node.destroy()
+        except Exception:
+            pass
+
     def _create_uhid_device(self, session: DeviceSession):
-        """Create UHID virtual device."""
+        """Attach the session to its UHID node, creating one if needed.
+
+        The node outlives the connection. A report written to a fresh node is
+        lost: evdev only buffers for readers already attached, and X takes
+        about half a second to open a new node while KOReader takes two. A
+        page turner that wakes on a button press sends exactly one report for
+        that press, so a node built per connect eats it and the user has to
+        press twice (issue #185). Keeping the node means the readers never
+        detach and the wake-up press lands.
+        """
         if not session.report_map:
             log.warning("No report descriptor for UHID")
             return
@@ -811,20 +839,28 @@ class HIDHost(ClassicMixin, BLEMixin):
         try:
             name = self._configured_name(session.address) or session.name or "HID Device"
             descriptor = sanitize_digitizer(session.report_map)
-            session.uhid_device = UHIDDevice(
-                name=name,
-                report_descriptor=descriptor,
-                bus=Bus.BLUETOOTH,
-                vendor=0,
-                product=0,
-                uniq=session.address,
-            )
-            log.success(f"UHID device created: {name}")
+            node = self._uhid_nodes.get(session.address)
+            if node and (node.report_descriptor != descriptor or node.name != name):
+                log.info(f"UHID device changed, rebuilding: {name}")
+                self._destroy_uhid_node(session.address)
+                node = None
             session.uhid_loop = asyncio.get_event_loop()
-            session.uhid_loop.add_reader(
-                session.uhid_device.fd, self._on_uhid_output, session)
-            session.uhid_loop.call_later(
-                0.5, session.uhid_device.discover_input_paths)
+            if node:
+                log.success(f"UHID device reused: {name}")
+            else:
+                node = UHIDDevice(
+                    name=name,
+                    report_descriptor=descriptor,
+                    bus=Bus.BLUETOOTH,
+                    vendor=0,
+                    product=0,
+                    uniq=session.address,
+                )
+                self._uhid_nodes[session.address] = node
+                log.success(f"UHID device created: {name}")
+                session.uhid_loop.call_later(0.5, node.discover_input_paths)
+            session.uhid_device = node
+            session.uhid_loop.add_reader(node.fd, self._on_uhid_output, session)
             session.is_pointer = descriptor_is_pointer(descriptor)
             if session.is_pointer:
                 log.info("Pointer device: cursor overlay on")
@@ -866,6 +902,8 @@ class HIDHost(ClassicMixin, BLEMixin):
                 await session.cleanup()
             except Exception:
                 pass
+        for address in list(self._uhid_nodes):
+            self._destroy_uhid_node(address)
         if had_pointer:
             self._notify_pointer(False)
 
