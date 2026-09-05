@@ -344,8 +344,20 @@ class BLEMixin:
         return None
 
     def _save_rotated_address(self, dev, new_addr: str):
-        """Save the new address and drop the device's stale entries."""
+        """Save the new address and drop the device's stale entries.
+
+        Options ride along, otherwise a rotation quietly drops the user's
+        report= and lights= and the controller stops being configured.
+        """
+        options = {}
+        for old in self.ble_devices:
+            if old.name == dev.name and old.address != new_addr:
+                options.update(config.get_device_options(old.address))
+
         config.add_device(new_addr, Protocol.BLE, dev.name)
+        for key, value in options.items():
+            config.set_device_option(new_addr, key, value)
+
         for old in self.ble_devices:
             if old.name == dev.name and old.address != new_addr:
                 config.remove_device(old.address)
@@ -439,6 +451,7 @@ class BLEMixin:
         self._create_uhid_device(session)
         await self._subscribe_to_ble_reports(session)
         await self._ble_activate_hid_service(session)
+        self.send_init_output_report(session)
         self._track_task(asyncio.create_task(self._read_ble_battery(session)))
 
     async def _read_ble_device_name(self, session):

@@ -43,6 +43,24 @@ class DeviceConfig:
     name: Optional[str] = None
 
 
+# Controllers whose indicator lights never settle until a host tells them to.
+# Matched on the device name, since Bluetooth HID hands us no vendor id. The
+# last two fields are the byte holding the light mask, which the toggle
+# rewrites, and the byte holding the packet counter, or None where there is
+# none.
+DEFAULT_OUTPUT_REPORTS = (
+    # Nintendo Joy-Con and Pro Controller. Report 0x01 carries a packet
+    # counter, eight neutral rumble bytes, then subcommand 0x30 (player
+    # lights) lighting player 1. Left alone they chase all four forever.
+    (('joy-con', 'pro controller'),
+     bytes.fromhex('01000001404000014040' '3001'), 11, 1),
+)
+
+# Light mask values, low nibble is the lights held solid.
+LIGHTS_ON = 0x01
+LIGHTS_OFF = 0x00
+
+
 class DeviceSession:
     """Live state for one connected device, keyed by normalized address."""
 
@@ -54,6 +72,8 @@ class DeviceSession:
         self.peer = None
         self.channels = None
         self.uhid_loop = None
+        self.lights_on = None
+        self.report_counter = 0
         self.name = None
         self.report_map: Optional[bytes] = None
         self.hid_reports = []
@@ -96,6 +116,8 @@ class DeviceSession:
         if self.battery_level is not None:
             entry["battery_level"] = self.battery_level
             entry["battery_updated"] = self.battery_updated
+        if self.lights_on is not None:
+            entry["lights"] = self.lights_on
         return entry
 
     async def cleanup(self):
@@ -186,29 +208,128 @@ class HIDHost(ClassicMixin, BLEMixin):
             connections += self.media_remote.state_list()
         return {"connected": bool(connections), "connections": connections}
 
-    def _on_uhid_output(self, session: DeviceSession):
-        """Pass a hidraw write on to the device it was written for.
+    def send_output_report(self, session: DeviceSession, payload: bytes) -> bool:
+        """Send one output report to a connected device, True if it went out.
 
         Classic takes the whole payload on the interrupt channel. BLE splits
-        it: hidraw always prefixes the report id, while HID over GATT carries
-        the id in the Report Reference descriptor and the characteristic holds
-        the body alone.
+        it, because hidraw always prefixes the report id while HID over GATT
+        carries the id in the Report Reference descriptor and the
+        characteristic holds the body alone.
         """
+        if session.channels:
+            # ponytail: Classic reports True on any write. HIDP DATA is
+            # fire-and-forget, so a device that ignores the report looks the
+            # same as one that took it. Switch to a GET_REPORT read-back if a
+            # controller ever needs the distinction.
+            session.channels.send_output_report(payload)
+            return True
+        if session.peer:
+            char = session.output_reports.get(payload[0])
+            if char is None:
+                log.debug(f"No BLE output report {payload[0]}")
+                return False
+            asyncio.ensure_future(
+                session.peer.write_value(char, payload[1:], with_response=False))
+            return True
+        return False
+
+    def _on_uhid_output(self, session: DeviceSession):
+        """Pass a hidraw write on to the device it was written for."""
         payload = session.uhid_device.read_output_report() if session.uhid_device else None
         if not payload:
             return
         try:
-            if session.channels:
-                session.channels.send_output_report(payload)
-            elif session.peer:
-                char = session.output_reports.get(payload[0])
-                if char is None:
-                    log.debug(f"No BLE output report {payload[0]}")
-                    return
-                asyncio.ensure_future(
-                    session.peer.write_value(char, payload[1:], with_response=False))
+            self.send_output_report(session, payload)
         except Exception as e:
             log.debug(f"Output report not forwarded: {e}")
+
+    def _light_entry(self, session: DeviceSession):
+        """This device's built-in light report, its mask and counter offsets."""
+        name = (self._configured_name(session.address) or session.name or '').lower()
+        for names, payload, mask_index, counter_index in DEFAULT_OUTPUT_REPORTS:
+            if any(n in name for n in names):
+                return payload, mask_index, counter_index
+        return None
+
+    @staticmethod
+    def _build_light_report(session: DeviceSession, entry, on: bool) -> bytes:
+        """Set the light mask, and stamp the packet counter where there is one.
+
+        Nintendo firmware expects that counter to advance, and ignores a
+        subcommand that repeats the previous value.
+        """
+        payload, mask_index, counter_index = entry
+        out = bytearray(payload)
+        out[mask_index] = LIGHTS_ON if on else LIGHTS_OFF
+        if counter_index is not None:
+            out[counter_index] = session.report_counter & 0x0F
+            session.report_counter += 1
+        return bytes(out)
+
+    def set_lights(self, address: str, on: bool):
+        """Toggle a controller's lights. Returns (sent, saved).
+
+        Nothing is written until the request is known to be answerable, so a
+        device with no lights never leaves a stale option behind.
+        """
+        address = normalize_addr(address)
+        session = self.sessions.get(address)
+        if session is None:
+            raise ValueError("device is not connected")
+        if config.get_device_options(address).get('report'):
+            raise ValueError("device has a configured report=, edit that instead")
+
+        entry = self._light_entry(session)
+        if entry is None:
+            raise ValueError("device has no controllable lights")
+
+        saved = config.set_device_option(address, 'lights', 'on' if on else 'off')
+        if not saved:
+            log.warning(f"No devices.conf line for {address}, lights not remembered")
+
+        session.lights_on = on
+        sent = self.send_output_report(session, self._build_light_report(session, entry, on))
+        return sent, saved
+
+    def send_init_output_report(self, session: DeviceSession):
+        """Settle the device's lights once it is connected, and on reconnect.
+
+        A raw 'report=' wins over the built-in table, and its bytes mean
+        whatever the user meant, so the toggle stays out of its way.
+        """
+        options = config.get_device_options(session.address)
+        raw = options.get('report')
+        entry = None
+
+        if raw:
+            try:
+                payload = bytes.fromhex(raw.replace(':', ''))
+            except ValueError:
+                log.warning(f"Bad hex in report= for {session.address}")
+                return
+        else:
+            entry = self._light_entry(session)
+            if entry is None:
+                return
+            payload = self._build_light_report(session, entry,
+                                               options.get('lights') != 'off')
+
+        if not payload:
+            return
+        try:
+            if not self.send_output_report(session, payload):
+                log.info(f"Device takes no report {payload[0]}, init skipped")
+                return
+        except Exception as e:
+            log.warning(f"Init report failed: {e}")
+            return
+
+        log.info(f"Sent init report {payload.hex()}")
+        # Only offer the toggle once the report has actually gone out. A name
+        # can match the table while the device has no such report, and a
+        # control that does nothing is worse than no control.
+        if entry:
+            session.lights_on = payload[entry[1]] != LIGHTS_OFF
 
     def _parse_devices(self):
         """Parse devices from config and group by protocol."""

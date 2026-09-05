@@ -345,6 +345,7 @@ class ClassicMixin:
             session.report_map = FALLBACK_HID_DESCRIPTOR
             log.warning("[Classic] Using fallback descriptor")
         self._create_uhid_device(session)
+        self.send_init_output_report(session)
 
     def _parse_hid_descriptor_list(self, session, data_element):
         """Parse HID Descriptor List from SDP."""
