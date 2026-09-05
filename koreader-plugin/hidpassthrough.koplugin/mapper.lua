@@ -11,6 +11,7 @@ local M = {
     BIN     = "/mnt/us/kindle-button-mapper/kindle-button-mapper",
     CONFIG  = "/mnt/us/kindle-button-mapper/config.ini",
     SCRIPTS = "/mnt/us/kindle-button-mapper/scripts",
+    MEDIA   = "/mnt/us/kindle_hid_passthrough/assets/audio-hack/media.sh",
     PIDFILE = "/tmp/kindle-button-mapper-waf.pid",
     LOG     = "/var/log/kindle-button-mapper-waf.log",
     HOST    = "127.0.0.1",
@@ -293,6 +294,14 @@ end
 -- no-argument half of KOReader's Dispatcher list.
 function M.koreaderEventScript(event)
     return string.format("%s/koreader.sh event %s", M.SCRIPTS, event)
+end
+
+-- The daemon's own media control. It pauses by no longer draining the audio
+-- FIFO, so the writer blocks and whatever is playing freezes in place. That
+-- works for any application, unlike a KOReader event, which only reaches the
+-- plugin that happens to own the playback.
+function M.mediaScript(command)
+    return string.format("%s %s", M.MEDIA, command)
 end
 
 -- Human label for a configured value, for the mapping list. `titles` maps both

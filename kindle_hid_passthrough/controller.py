@@ -19,6 +19,11 @@ from logging_utils import errstr
 
 logger = logging.getLogger(__name__)
 
+# The stock binary the audio bypass swaps out, and where it keeps it. The
+# wrapper delegates to .real, so the pair is what "installed" means.
+GST_BIN = "/usr/bin/gst-launch-0.10"
+GST_REAL_BIN = GST_BIN + ".real"
+
 __all__ = ['DaemonController']
 
 
@@ -35,7 +40,18 @@ class DaemonController:
 
         self._op_lock = asyncio.Lock()
         self._suspended_by_system = False
-        self.bt_enabled = True
+        # HID on/off survives a reboot: /start and /stop write it to disk
+        # and boot honours what the user left. It used to always come up on.
+        self._bt_enabled = self._load_bt_state()
+        # The bypass stops the stock audiomgrd and puts a mock in its place, so
+        # it is opt-in and off until asked for: a device where it does not work
+        # has to be able to keep its own audio daemon.
+        self._audio_enabled = self._load_audio_state()
+        if not self._bt_enabled:
+            logger.info("HID was left off; daemon starts suspended")
+            daemon._suspended = True
+        elif self._audio_enabled:
+            self._spawn_audio_hack(True)
 
         # Scan state
         self.scan_result = None
@@ -55,6 +71,165 @@ class DaemonController:
         self._cursor_proc = None
         self._cursor_lock = threading.Lock()
 
+    # ---- Persisted HID state + audio bypass hack ----
+
+    # Shipped location first, development checkout second.
+    _AUDIO_HACK_DIRS = ("assets/audio-hack", "teamwork_audio_hack")
+
+    def _bt_state_path(self):
+        return os.path.join(config.cache_dir, "bt_enabled")
+
+    def _audio_state_path(self):
+        return config.audio_state_file
+
+    def _load_audio_state(self) -> bool:
+        """Off unless the user turned it on. Unlike HID, which the daemon
+        exists for, the bypass replaces a system daemon and cannot be the
+        default on hardware nobody has tested it on."""
+        return config.audio_enabled()
+
+    def _persist_audio_state(self, value: bool):
+        try:
+            os.makedirs(config.cache_dir, exist_ok=True)
+            tmp = self._audio_state_path() + ".tmp"
+            with open(tmp, "w") as f:
+                f.write("1" if value else "0")
+            os.replace(tmp, self._audio_state_path())
+        except OSError as e:
+            logger.warning(f"Could not persist audio_enabled: {errstr(e)}")
+
+    def _load_bt_state(self) -> bool:
+        try:
+            with open(self._bt_state_path()) as f:
+                return f.read().strip() != "0"
+        except OSError:
+            return True
+
+    def _persist_bt_state(self, value: bool):
+        try:
+            os.makedirs(config.cache_dir, exist_ok=True)
+            tmp = self._bt_state_path() + ".tmp"
+            with open(tmp, "w") as f:
+                f.write("1" if value else "0")
+            os.replace(tmp, self._bt_state_path())
+        except OSError as e:
+            logger.warning(f"Could not persist bt_enabled: {errstr(e)}")
+
+    def _audio_mock_running(self) -> bool:
+        """Whether our LIPC mock is the audiomgrd that is actually up.
+
+        The switch records what the user asked for; this reports what is
+        happening. They drifted apart in practice -- the stock daemon came
+        back while /status still said the bypass was on -- and an application
+        asking audiomgrd for an output then correctly got "none".
+        """
+        try:
+            pids = os.listdir("/proc")
+        except OSError:
+            return False
+        for pid in pids:
+            if not pid.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    if b"lipc_audio_mock.lua" in f.read():
+                        return True
+            except OSError:
+                continue
+        return False
+
+    def _gst_wrapper_installed(self) -> bool:
+        """Whether our gst-launch wrapper is the binary the system will run.
+
+        The mock alone is not the bypass. It answers audioOutputConnected,
+        but nothing writes into the FIFO until the wrapper rewrites the
+        pipeline's sink, so the reader drains an empty pipe and the sink
+        receives silence while every switch still reads as on.
+        """
+        if not os.path.isfile(GST_REAL_BIN):
+            return False
+        try:
+            with open(GST_BIN, "rb") as f:
+                return f.read(2) == b"#!"
+        except OSError:
+            return False
+
+    def _audio_hack_script(self, enable: bool):
+        name = "start_audio_hack.sh" if enable else "stop_audio_hack.sh"
+        for d in self._AUDIO_HACK_DIRS:
+            path = os.path.join(config.base_path, d, name)
+            if os.path.isfile(path):
+                return path
+        return None
+
+    def _spawn_audio_hack(self, enable: bool):
+        """Bring the audio LIPC mock up or down together with HID."""
+        threading.Thread(target=self._run_audio_hack, args=(enable,),
+                         daemon=True).start()
+
+    def _run_audio_hack(self, enable: bool):
+        script = self._audio_hack_script(enable)
+        if script is None:
+            return
+        action, done = ("start", "started") if enable else ("stop", "stopped")
+        try:
+            proc = subprocess.run(["/bin/sh", script], timeout=30,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT)
+        except Exception as e:
+            logger.warning(f"Audio hack {action} failed: {errstr(e)}")
+            return
+
+        # Report what the script actually did. Discarding its output and
+        # logging success unconditionally hid a real failure: on a device
+        # whose /mnt/us is FUSE the script aborted creating a symlink while
+        # the log still said the hack had started.
+        if proc.returncode == 0:
+            logger.info(f"Audio hack {done}")
+            return
+        logger.warning(f"Audio hack {action} failed (exit {proc.returncode})")
+        output = (proc.stdout or b"").decode("utf-8", "replace")
+        for line in output.splitlines():
+            if line.strip():
+                logger.warning(f"[audio-hack] {line.rstrip()}")
+
+    @property
+    def bt_enabled(self) -> bool:
+        return self._bt_enabled
+
+    @bt_enabled.setter
+    def bt_enabled(self, value):
+        value = bool(value)
+        changed = value != getattr(self, "_bt_enabled", None)
+        self._bt_enabled = value
+        if changed:
+            self._persist_bt_state(value)
+            if self._audio_enabled:
+                self._spawn_audio_hack(value)
+
+    @property
+    def audio_enabled(self) -> bool:
+        return self._audio_enabled
+
+    @property
+    def audio_running(self) -> bool:
+        """Whether the bypass is actually up, both halves of it."""
+        return self._audio_mock_running() and self._gst_wrapper_installed()
+
+    @audio_enabled.setter
+    def audio_enabled(self, value):
+        value = bool(value)
+        changed = value != getattr(self, "_audio_enabled", None)
+        self._audio_enabled = value
+        if not changed:
+            return
+        self._persist_audio_state(value)
+        # Only touch the stock daemon while HID is on. With HID off there is no
+        # Bluetooth sink to route to, and stopping audiomgrd then would leave
+        # the device with no audio at all instead of with its own.
+        if self._bt_enabled:
+            self._spawn_audio_hack(value)
+
     def get_status(self) -> dict:
         """Thread-safe read of daemon state. Called from HTTP thread."""
         devices = self._get_devices_cached()
@@ -66,6 +241,8 @@ class DaemonController:
             "scanning": self.is_scanning,
             "pairing": self.is_pairing,
             "cursor_running": self.cursor_running(),
+            "audio_enabled": self.audio_enabled,
+            "audio_running": self.audio_running,
         }
 
         conn = self.daemon.connection_state
@@ -91,8 +268,23 @@ class DaemonController:
 
     async def _resume_if_enabled(self):
         """Resume unless BT was toggled off while the op ran."""
-        if self.bt_enabled:
-            await self.daemon.resume()
+        if not self.bt_enabled:
+            return
+        self._restore_audio_hack_if_needed()
+        await self.daemon.resume()
+
+    def _restore_audio_hack_if_needed(self):
+        """Put the bypass back if it went away while we were not looking.
+
+        audiomgrd is an upstart job with respawn, so anything that starts it
+        keeps it alive and takes the LIPC name with it. An update restores
+        the stock gst-launch the same way. The start script is idempotent and
+        checks both halves itself, so this costs nothing when the bypass is
+        healthy.
+        """
+        if self._audio_enabled and not self.audio_running:
+            logger.info("Audio bypass was down, restoring it")
+            self._spawn_audio_hack(True)
 
     def _get_devices_cached(self) -> list:
         """Device list from devices.conf, cached by file mtime."""
@@ -212,7 +404,10 @@ class DaemonController:
             asyncio.run_coroutine_threadsafe(self._do_resume(), self.loop)
             return
 
-        protocol = Protocol.CLASSIC if protocol_str == 'classic' else Protocol.BLE
+        try:
+            protocol = Protocol(protocol_str or 'ble')
+        except ValueError:
+            protocol = Protocol.CLASSIC if protocol_str == 'classic' else Protocol.BLE
         asyncio.run_coroutine_threadsafe(
             self._do_connect(address, protocol), self.loop
         )

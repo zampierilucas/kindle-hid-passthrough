@@ -114,6 +114,21 @@ function HIDPassthrough:isRunning()
     return self:getState() == "on"
 end
 
+-- The audio bypass is its own switch, not part of HID. It stops the stock
+-- audio daemon and puts a mock in its place, which is worth doing only if it
+-- works here: on a device where it does not, the reader still needs its own
+-- audio, so this has to be something the user can leave off.
+function HIDPassthrough:audioEnabled()
+    local data = self:_httpGetJson("/audio")
+    return data ~= nil and data.enabled == true
+end
+
+function HIDPassthrough:setAudioEnabled(want)
+    local data, err = self:_httpGetJson("/audio?enable=" .. (want and "1" or "0"))
+    if not data then return false, err end
+    return data.enabled == want, nil
+end
+
 ------------------------------------------------------------------------------
 -- Key mappings
 ------------------------------------------------------------------------------
@@ -383,6 +398,13 @@ local MAPPER_KINDS = {
     { section = "triggers", label = _("Trigger") },
 }
 
+-- Daemon-side media control, mapped to assets/audio-hack/media.sh.
+local MEDIA_ACTIONS = {
+    { command = "toggle", title = _("Play/Pause any audio") },
+    { command = "pause",  title = _("Pause any audio") },
+    { command = "play",   title = _("Resume any audio") },
+}
+
 -- Who owns the device node. Only one process can hold an evdev grab, so this
 -- is the difference between KOReader seeing the keys and the mapper seeing
 -- them. `grab` absent means the daemon decides from the node itself.
@@ -620,8 +642,30 @@ function HIDPassthrough:mapperCapture(dev, touchmenu_instance, device_depth)
     -- the picker has to be pushed onto, so remember it and check on the way
     -- back rather than pushing onto whatever the user browsed to meanwhile.
     local menu_at_start = touchmenu_instance and touchmenu_instance.item_table
+    -- The mapper does the capture, not us, and only one process can hold an
+    -- evdev grab. While KOReader holds this node the mapper's reader gets
+    -- nothing and every capture ends in a timeout, so hand the node over for
+    -- the length of the call. Nothing to do when the mode already gave it away.
+    local held = input_fds[node] ~= nil
+    if held then releaseNode(node) end
     UIManager:scheduleIn(0.1, function()
         local cap, err = mapper.capture(node, 8000)
+        if held then
+            -- The capture reader lets go when the call returns; give it the
+            -- same moment _applyMapperMode does before grabbing again, and
+            -- drop our stale entry first or the reopen is a no-op.
+            UIManager:scheduleIn(1.5, function()
+                releaseNode(node)
+                if not self:_reclaimInput(node) then
+                    logger.warn("HIDPassthrough: could not take", node,
+                        "back after capture")
+                    UIManager:show(InfoMessage:new{
+                        text = _("Reconnect the device for KOReader to pick it up again."),
+                        timeout = 4,
+                    })
+                end
+            end)
+        end
         UIManager:close(msg)
         if not cap then
             UIManager:show(InfoMessage:new{
@@ -712,6 +756,21 @@ function HIDPassthrough:_actionSections()
             if #items > 0 then
                 table.insert(sections, { title = _("Favorites"), items = items })
             end
+        end
+
+        -- The daemon pauses by holding its own audio FIFO, so this stops
+        -- whatever is playing without the application cooperating. It replaced
+        -- the per-plugin audiobook events this branch used to list: those only
+        -- reach the plugin that owns the playback and do nothing otherwise.
+        if util.pathExists(self:_mapper().MEDIA) then
+            local items = {}
+            for dummy, a in ipairs(MEDIA_ACTIONS) do -- luacheck: ignore dummy
+                table.insert(items, {
+                    title = a.title,
+                    script = self:_mapper().mediaScript(a.command),
+                })
+            end
+            table.insert(sections, { title = _("Audio"), items = items })
         end
 
         local ok, koactions = pcall(dofile,
@@ -836,8 +895,8 @@ function HIDPassthrough:_spawnBinary()
     end
     -- setsid so it survives KOReader exiting; exit code is meaningless.
     local cmd = string.format(
-        "(setsid %s --daemon </dev/null >/dev/null 2>&1 &) 2>/dev/null || "
-        .. "(%s --daemon </dev/null >/dev/null 2>&1 &)",
+        "(setsid %s --daemon </dev/null >>/mnt/us/kindle_hid_passthrough/daemon.log 2>&1 &) 2>/dev/null || "
+        .. "(%s --daemon </dev/null >>/mnt/us/kindle_hid_passthrough/daemon.log 2>&1 &)",
         self.DAEMON_BINARY, self.DAEMON_BINARY
     )
     logger.info("HIDPassthrough: spawning daemon:", cmd)
@@ -1785,6 +1844,21 @@ function HIDPassthrough:_doToggle(touchmenu_instance)
     end
 end
 
+function HIDPassthrough:_doToggleAudio(touchmenu_instance)
+    local want = not self:audioEnabled()
+    local ok, err = self:setAudioEnabled(want)
+    local msg
+    if ok then
+        msg = want and _("Bluetooth audio on.") or _("Bluetooth audio off.")
+    else
+        msg = T(_("Could not change it: %1"), tostring(err or "failed"))
+    end
+    UIManager:show(InfoMessage:new{ text = msg, timeout = ok and 2 or 4 })
+    if touchmenu_instance then
+        touchmenu_instance:updateItems()
+    end
+end
+
 function HIDPassthrough:addToMainMenu(menu_items)
     menu_items.hid_passthrough = {
         text = _("BT Manager - HID Passthrough"),
@@ -1805,6 +1879,17 @@ function HIDPassthrough:addToMainMenu(menu_items)
                 callback = function(touchmenu_instance)
                     self:_doToggle(touchmenu_instance)
                 end,
+            },
+            {
+                text = _("Bluetooth audio"),
+                help_text = _("Sends what the Kindle plays to the paired headphones. While on, the stock audio daemon is replaced; leave it off if audio misbehaves on this device."),
+                enabled_func = function() return self:isRunning() end,
+                checked_func = function() return self:audioEnabled() end,
+                check_callback_updates_menu = true,
+                callback = function(touchmenu_instance)
+                    self:_doToggleAudio(touchmenu_instance)
+                end,
+                separator = true,
             },
             {
                 text = _("Scan for devices"),

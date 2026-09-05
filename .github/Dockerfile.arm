@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     linux-libc-dev \
     libssl-dev \
     libx11-dev \
+    libsbc-dev \
     rustc \
     cargo \
     musl-tools \
@@ -109,7 +110,7 @@ RUN --mount=type=cache,target=/nuitka-cache \
 RUN cp /lib/ld-linux-armhf.so.3 /build/nuitka-out/main.dist/ld-linux-armhf.so.3 && \
     for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 \
                libutil.so.1 libresolv.so.2 libnss_dns.so.2 libnss_files.so.2 \
-               libz.so.1; do \
+               libz.so.1 libsbc.so.1; do \
         src=$(find /lib /usr/lib -name "$lib" 2>/dev/null | head -1); \
         if [ -n "$src" ]; then \
             cp -L "$src" /build/nuitka-out/main.dist/"$lib"; \

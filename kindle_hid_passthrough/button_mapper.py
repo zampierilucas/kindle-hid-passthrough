@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 MAPPER_CONFIG = "/mnt/us/kindle-button-mapper/config.ini"
 
 
+def _is_audio(protocol) -> bool:
+    return str(getattr(protocol, 'value', protocol)) == 'classic_audio'
+
+
 def _bare_addr(value: str) -> str:
     return value.split('/')[0].strip().upper()
 
@@ -43,7 +47,8 @@ def _slug(name: str, address: str, text: str) -> str:
     return slug
 
 
-def register_device(address: str, name: str = None, reload: bool = True) -> bool:
+def register_device(address: str, name: str = None, reload: bool = True,
+                    audio: bool = False) -> bool:
     """Add a device block to the mapper config. True if one was added."""
     try:
         with open(MAPPER_CONFIG) as f:
@@ -60,6 +65,14 @@ def register_device(address: str, name: str = None, reload: bool = True) -> bool
     if name:
         block += f'name = {name}\n'
     block += f'uniq = {address}\n'
+    if audio:
+        # An audio device reaches us through the injected Consumer Control
+        # descriptor, so its node carries media keys and nothing else --
+        # keys KOReader has no binding for. Leaving the node to KOReader by
+        # default meant the mapper never saw a press and the button did
+        # nothing until the user found the mode setting by hand. Passthrough
+        # keeps whatever is unmapped flowing on.
+        block += 'grab = true\npassthrough = true\n'
 
     try:
         with open(MAPPER_CONFIG, 'a') as f:
@@ -142,10 +155,11 @@ def _block_uniq(block) -> str:
 def register_all(devices) -> None:
     """Register every (address, protocol, name) tuple, skipping wildcards."""
     added = False
-    for address, _proto, name in devices:
+    for address, proto, name in devices:
         if address == '*':
             continue
-        added |= register_device(address, name, reload=False)
+        added |= register_device(address, name, reload=False,
+                                 audio=_is_audio(proto))
     if added:
         _reload_mapper()
 

@@ -23,7 +23,7 @@ return {
         { event = "ShowWikipediaLookup", title = "Wikipedia lookup" },
     } },
     { section = "Reader", actions = {
-        { event = "AddCurrentLocationToStack", title = "Add current location to history" },
+                { event = "AddCurrentLocationToStack", title = "Add current location to history" },
         { event = "Back", title = "Back" },
         { event = "GoBackLink", title = "Back to previous location" },
         { event = "ShowBookCover", title = "Book cover" },

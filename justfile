@@ -23,6 +23,7 @@ deploy:
     @echo "Remounting filesystems as writable..."
     ssh {{host}} "/usr/sbin/mntroot rw && mount -o remount,rw /mnt/base-us"
     @echo "Copying all files via tar pipe..."
+    # libsbc.so.1 is not in the repo, so it is globbed away when absent.
     (cd {{src_dir}} && tar cf - \
         --transform='s|^kindle_hid_passthrough/hid-passthrough-dev.upstart|etc/upstart/hid-passthrough.conf|' \
         --transform='s|^kindle_hid_passthrough/|mnt/us/kindle_hid_passthrough/|' \
@@ -33,6 +34,7 @@ deploy:
         --transform='s|^illusion/BTManager.sh|mnt/us/kindle_hid_passthrough/illusion/BTManager.sh|' \
         kindle_hid_passthrough/*.py \
         kindle_hid_passthrough/config.ini \
+        $(ls kindle_hid_passthrough/libsbc.so.1 2>/dev/null) \
         kindle_hid_passthrough/BUILD_SHA \
         kindle_hid_passthrough/hid-passthrough-dev.upstart \
         kindle_hid_passthrough/modules/*.ko \

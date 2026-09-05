@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import List, Optional
 
+from bumble import avc, avrcp
 from bumble.core import InvalidStateError
 from bumble.hci import (
     HCI_CONNECTION_TIMEOUT_ERROR,
@@ -153,7 +154,65 @@ class DeviceSession:
             self.teardown_done.set()
 
 
+
+class KindleAvrcpDelegate(avrcp.Delegate):
+    def __init__(self, host):
+        super().__init__()
+        self.host = host
+
+    async def on_key_event(
+        self,
+        operation_id: avc.PassThroughFrame.OperationId,
+        pressed: bool,
+        operation_data: bytes
+    ) -> None:
+        log.info(f"[AVRCP] Key {operation_id.name} {'pressed' if pressed else 'released'}")
+
+        target_session = None
+        for session in self.host.sessions.values():
+            if session.protocol.value == "classic_audio" and session.uhid_device:
+                target_session = session
+                break
+
+        if not target_session:
+            return
+
+
+        # We use a 1-byte report for Report ID 1.
+        # Bits: [0: Next, 1: Prev, 2: Play/Pause, 3: VolUp, 4: VolDown, 5-7: padding]
+        bitmask = 0x00
+        # Media keys are forwarded to the button mapper and nothing else: the
+        # daemon must not act on a key the user never mapped. Pressing
+        # Play/Pause used to toggle the audio pause here as well, so an unmapped
+        # button still paused, and a button mapped to something else did both.
+        # Universal pause lives behind /media/toggle, /media/play and
+        # /media/pause, which the mapper -- or anything else -- can call.
+        if operation_id in (avc.PassThroughFrame.OperationId.PLAY, avc.PassThroughFrame.OperationId.PAUSE):
+            bitmask = 0x04 # Bit 2
+        elif operation_id in (avc.PassThroughFrame.OperationId.FORWARD, avc.PassThroughFrame.OperationId.UP, avc.PassThroughFrame.OperationId.RIGHT):
+            bitmask = 0x01 # Bit 0
+        elif operation_id in (avc.PassThroughFrame.OperationId.BACKWARD, avc.PassThroughFrame.OperationId.DOWN, avc.PassThroughFrame.OperationId.LEFT):
+            bitmask = 0x02 # Bit 1
+        elif operation_id == avc.PassThroughFrame.OperationId.VOLUME_UP:
+            bitmask = 0x08 # Bit 3
+        elif operation_id == avc.PassThroughFrame.OperationId.VOLUME_DOWN:
+            bitmask = 0x10 # Bit 4
+
+        if bitmask == 0:
+            # A key the injected descriptor does not declare. Sending the
+            # report anyway announced "every key released" to the kernel,
+            # which cancels a key the peer is still holding down.
+            return
+
+        # Send report with Report ID 1
+        report = bytes([0x01, bitmask if pressed else 0x00])
+        try:
+            target_session.uhid_device.send_input(report)
+        except Exception as e:
+            log.error(f"Failed to send AVRCP input: {e}")
+
 class HIDHost(ClassicMixin, BLEMixin):
+
     """HID Host supporting both BLE and Classic Bluetooth.
 
     Protocol-specific handlers live in ClassicMixin and BLEMixin.
@@ -339,7 +398,7 @@ class HIDHost(ClassicMixin, BLEMixin):
 
         for addr, protocol, name in devices:
             dev = DeviceConfig(address=addr, protocol=protocol, name=name)
-            if protocol == Protocol.CLASSIC:
+            if protocol in (Protocol.CLASSIC, Protocol.CLASSIC_AUDIO):
                 self.classic_devices.append(dev)
             else:
                 self.ble_devices.append(dev)
@@ -374,12 +433,26 @@ class HIDHost(ClassicMixin, BLEMixin):
         # Classic-specific setup
         if self.classic_devices or self.media_remote:
             class_of_device = (MEDIA_REMOTE_COD if self.media_remote
-                               else 0x000104)
+                               else 0x200104)
             await self.device.host.send_command(
                 HCI_Write_Class_Of_Device_Command(class_of_device=class_of_device),
                 check_result=True
             )
             log.info(f"Classic enabled: CoD 0x{class_of_device:06X}")
+
+            from bumble.a2dp import make_audio_source_service_sdp_records
+            from bumble.avdtp import Listener
+
+            # A2DP Source setup
+            self.a2dp_listener = Listener.for_device(device=self.device)
+            self.avrcp_protocol = avrcp.Protocol(KindleAvrcpDelegate(self))
+            self.avrcp_protocol.listen(self.device)
+
+            handle = 0x00010002
+            self.device.sdp_service_records.update({
+                handle: make_audio_source_service_sdp_records(service_record_handle=handle)
+            })
+            log.info("A2DP Source SDP records configured. AVDTP Listener active.")
 
             local_name_bytes = config.device_name.encode('utf-8') + b'\x00'
             await self.device.host.send_command(
@@ -388,7 +461,7 @@ class HIDHost(ClassicMixin, BLEMixin):
             )
 
         if self.media_remote:
-            self.media_remote.setup(self.device)
+            self.media_remote.setup(self.device, getattr(self, 'a2dp_listener', None), getattr(self, 'avrcp_protocol', None))
 
         if self.ble_devices:
             log.info("BLE enabled")
@@ -656,6 +729,11 @@ class HIDHost(ClassicMixin, BLEMixin):
         if session.closed:
             await session.teardown_done.wait()
             return
+        if session.protocol == Protocol.CLASSIC_AUDIO:
+            # The pump dies on its own when the RTP channel goes, but the
+            # streamer stays behind holding the FIFO open, and _audio_session
+            # keeps reporting a live session to /media/*.
+            await self._close_audio_session()
         was_pointer = session.is_pointer and session.uhid_device is not None
         await session.cleanup()
         if was_pointer and self._pointer_count() == 0:
@@ -731,15 +809,15 @@ class HIDHost(ClassicMixin, BLEMixin):
 
         self._parse_devices()
 
-        bucket = self.classic_devices if protocol == Protocol.CLASSIC else self.ble_devices
+        bucket = self.classic_devices if protocol in (Protocol.CLASSIC, Protocol.CLASSIC_AUDIO) else self.ble_devices
         norm = normalize_addr(address)
         if not any(d.address != '*' and normalize_addr(d.address) == norm for d in bucket):
             bucket.append(DeviceConfig(address=address, protocol=protocol, name=name))
 
         await self.start(pairing=True)
 
-        if protocol == Protocol.CLASSIC:
-            return await self._pair_classic(address)
+        if protocol in (Protocol.CLASSIC, Protocol.CLASSIC_AUDIO):
+            return await self._pair_classic(address, protocol)
         else:
             return await self._pair_ble(address)
 
@@ -755,11 +833,15 @@ class HIDHost(ClassicMixin, BLEMixin):
 
         if session.is_alive():
             self._register_session(session)
-            if session.protocol == Protocol.CLASSIC:
-                await self._continue_classic_after_pairing(session)
+            if session.protocol in (Protocol.CLASSIC, Protocol.CLASSIC_AUDIO):
+                if session.protocol == Protocol.CLASSIC:
+                    await self._continue_classic_after_pairing(session)
+                else:
+                    await self._continue_classic_audio_after_pairing(session)
             else:
                 await self._continue_ble_after_pairing(session)
             proto_name = session.protocol.value.upper()
+
             log.success(f"\n[{proto_name}] Paired and receiving HID reports.")
         else:
             log.info("Paired device disconnected; the connect loops will pick it up")
@@ -767,6 +849,138 @@ class HIDHost(ClassicMixin, BLEMixin):
         self._parse_devices()
         await self._load_keystore_addresses()
         await self._serve()
+
+
+
+    async def _continue_classic_audio_after_pairing(self, session):
+        from bumble.a2dp import A2DP_SBC_CODEC_TYPE, SbcMediaCodecInformation
+        from bumble.avdtp import (
+            AVDTP_AUDIO_MEDIA_TYPE,
+            MediaCodecCapabilities,
+            MediaPacketPump,
+            RealtimeClock,
+            StreamEndPointType,
+        )
+        from bumble.avdtp import (
+            Protocol as AvdtpProtocol,
+        )
+        from bumble.rtp import MediaPacket
+
+        log.info("[Classic] Audio device connected. Initiating AVDTP...")
+
+        # One audio session at a time: a stale pump keeps pushing RTP with its
+        # own sequence numbers into the same channel and the sink decodes the
+        # interleaved streams as noise.
+        await self._close_audio_session()
+
+        codec_caps = MediaCodecCapabilities(
+            media_type=AVDTP_AUDIO_MEDIA_TYPE,
+            media_codec_type=A2DP_SBC_CODEC_TYPE,
+            media_codec_information=SbcMediaCodecInformation(
+                sampling_frequency=SbcMediaCodecInformation.SamplingFrequency.SF_44100,
+                channel_mode=SbcMediaCodecInformation.ChannelMode.JOINT_STEREO,
+                block_length=SbcMediaCodecInformation.BlockLength.BL_16,
+                subbands=SbcMediaCodecInformation.Subbands.S_8,
+                allocation_method=SbcMediaCodecInformation.AllocationMethod.LOUDNESS,
+                minimum_bitpool_value=2,
+                maximum_bitpool_value=53,
+            ),
+        )
+
+        avdtp_protocol = self.a2dp_listener.servers.get(session.connection.handle)
+        if avdtp_protocol and getattr(avdtp_protocol, 'l2cap_channel', None):
+            from bumble.l2cap import ClassicChannel
+            if avdtp_protocol.l2cap_channel.state != ClassicChannel.State.OPEN:
+                del self.a2dp_listener.servers[session.connection.handle]
+                avdtp_protocol = None
+        if avdtp_protocol:
+            log.info("AVDTP already connected by remote")
+        else:
+            try:
+                log.info("Connecting AVDTP to remote...")
+                avdtp_protocol = await AvdtpProtocol.connect(session.connection)
+                self.a2dp_listener.set_server(session.connection, avdtp_protocol)
+            except Exception as e:
+                log.warning(f"Failed to connect AVDTP: {e}")
+                # Race condition: Remote might be connecting to us. Wait a bit and check servers.
+                await asyncio.sleep(1.0)
+                avdtp_protocol = self.a2dp_listener.servers.get(session.connection.handle)
+                if avdtp_protocol:
+                    log.info("Picked up inbound AVDTP connection from remote after outbound failure")
+                else:
+                    log.error(f"Failed to establish AVDTP connection: {e}")
+                    return
+
+        from audio_pipe import FRAMES_PER_PACKET, SAMPLES_PER_FRAME, FifoAudioStreamer
+        audio_streamer = FifoAudioStreamer()
+        samples_per_packet = SAMPLES_PER_FRAME * FRAMES_PER_PACKET
+
+        async def packet_generator():
+            seq = 0
+            ts = 0
+            samples = 0
+            try:
+                while True:
+                    payload = audio_streamer.get_next_payload()
+                    packet = MediaPacket(
+                        version=2, padding=0, extension=0, marker=0,
+                        sequence_number=seq, timestamp=ts, ssrc=0,
+                        csrc_list=[], payload_type=96, payload=payload
+                    )
+                    # The RTP timestamp wraps at 32 bits, but the pump paces
+                    # off timestamp_seconds: feeding it the wrapped value makes
+                    # the clock jump back to zero after ~27 h of streaming and
+                    # the pump then sends without ever sleeping again.
+                    packet.timestamp_seconds = samples / 44100.0
+                    yield packet
+                    seq = (seq + 1) & 0xFFFF
+                    samples += samples_per_packet
+                    ts = samples & 0xFFFFFFFF
+            finally:
+                audio_streamer.close()
+
+        pump = MediaPacketPump(packet_generator(), RealtimeClock())
+        self._audio_session = (pump, audio_streamer)
+
+        # From here the session owns an open FIFO, so every way out has to
+        # release it: leaving _audio_session populated by a stream that never
+        # started made /media/* report a live session and leaked the
+        # descriptor for the life of the process.
+        try:
+            # Creates the LocalSource, binds the pump, registers it to the protocol
+            source = avdtp_protocol.add_source(codec_caps, pump)
+
+            endpoints = await avdtp_protocol.discover_remote_endpoints()
+            sink_endpoint = next(
+                (e for e in endpoints if e.tsep == StreamEndPointType.SNK), None)
+            if not sink_endpoint:
+                log.error("No AVDTP SINK endpoints found on remote")
+                await self._close_audio_session()
+                return
+
+            log.info(f"Found remote SINK endpoint: {sink_endpoint.seid}")
+
+            stream = await avdtp_protocol.create_stream(source, sink_endpoint)
+            log.info("Configured stream. Opening...")
+
+            await stream.open()
+            log.info("Stream opened. Starting...")
+
+            # Starting the stream makes Bumble call source.start(), which
+            # starts the pump in a task it tracks itself.
+            await stream.start()
+        except asyncio.CancelledError:
+            await self._close_audio_session()
+            raise
+        except Exception as e:
+            log.error(f"[Classic Audio] AVDTP setup failed: {errstr(e)}")
+            await self._close_audio_session()
+            return
+        log.success("[Classic Audio] AVDTP streaming started! Injecting silence...")
+
+        # FIX: Create UHID device for AVRCP media keys
+        if not session.uhid_device:
+            self._create_uhid_device(session)
 
     # ==================== COMMON ====================
 
@@ -794,6 +1008,18 @@ class HIDHost(ClassicMixin, BLEMixin):
 
     def _create_uhid_device(self, session: DeviceSession):
         """Create UHID virtual device."""
+
+        if not session.report_map and session.protocol.value == "classic_audio":
+            # Dummy Consumer Control (Media Keys) Descriptor
+            session.report_map = bytes([
+                0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85, 0x01,
+                0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x05,
+                0x09, 0xB5, 0x09, 0xB6, 0x09, 0xCD, 0x09, 0xE9,
+                0x09, 0xEA, 0x81, 0x02, 0x95, 0x03, 0x81, 0x03,
+                0xC0
+            ])
+            log.info("Injected dummy Media Keys descriptor for audio device")
+
         if not session.report_map:
             log.warning("No report descriptor for UHID")
             return
@@ -840,8 +1066,37 @@ class HIDHost(ClassicMixin, BLEMixin):
         except Exception as e:
             log.warning(f"cursor hook failed: {e}")
 
+    async def _close_audio_session(self):
+        """Stop the pump and close the FIFO of the current audio session.
+
+        Called both before opening a new session and from cleanup(). A
+        suspend/resume builds a fresh host, so keying the teardown only on the
+        next session start leaked one FIFO descriptor per on/off cycle:
+        measured 2 -> 3 -> 4 open descriptors over two /stop + /start cycles.
+        """
+        prev = getattr(self, "_audio_session", None)
+        if not prev:
+            return
+        log.info("[Classic Audio] Closing previous audio session...")
+        prev_pump, prev_streamer = prev
+        self._audio_session = None
+        try:
+            if prev_pump is not None:
+                await prev_pump.stop()
+        except Exception as e:
+            log.warning(f"[Classic Audio] previous pump did not stop: {e}")
+        try:
+            if prev_streamer is not None:
+                prev_streamer.close()
+        except Exception as e:
+            log.warning(f"[Classic Audio] previous streamer did not close: {e}")
+
     async def cleanup(self):
         """Clean up resources."""
+        # Producers first: _close_audio_session awaits, and the task that sets
+        # up AVDTP spends seconds between connect and start. Closing first let
+        # that task install a fresh streamer into the session we had just
+        # emptied, and its FIFO descriptor was then never released.
         if self._connection_tasks:
             pending = list(self._connection_tasks)
             for task in pending:
@@ -852,6 +1107,7 @@ class HIDHost(ClassicMixin, BLEMixin):
             except Exception:
                 pass
             self._connection_tasks.clear()
+        await self._close_audio_session()
 
         had_pointer = self._pointer_count() > 0
         for session in list(self.sessions.values()):
