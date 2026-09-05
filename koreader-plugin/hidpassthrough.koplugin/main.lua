@@ -347,6 +347,26 @@ function HIDPassthrough:_mapper()
     return self._mapper_client
 end
 
+function HIDPassthrough:_eventServer()
+    if not self._event_server then
+        self._event_server = dofile(self.path .. "/eventserver.lua")
+    end
+    return self._event_server
+end
+
+function HIDPassthrough:_syncEventServer()
+    local f = io.open(self:_mapper().CONFIG, "r")
+    local text = f and f:read("*a") or ""
+    if f then f:close() end
+    if text:find("koreader.sh", 1, true)
+        or text:find("auto.sh", 1, true)
+        or text:find("keyboard_layout", 1, true) then
+        self:_eventServer().start()
+    else
+        self:_eventServer().stop()
+    end
+end
+
 function HIDPassthrough:genMapperMenu()
     local mapper = self:_mapper()
     if not mapper.installed() then
@@ -598,6 +618,7 @@ function HIDPassthrough:mapperEdit(transform)
         return false
     end
     mapper.reload()
+    self:_syncEventServer()
     return true
 end
 
@@ -1663,11 +1684,17 @@ function HIDPassthrough:init()
     -- A device may already be connected.
     self:_scanInputs()
     self:_startBatteryPoll()
+    self:_syncEventServer()
 end
 
 function HIDPassthrough:onCloseWidget()
     self:_cancelPolls()
     self:_stopBatteryPoll()
+    self:_eventServer().stop()
+end
+
+function HIDPassthrough:onResume()
+    self:_syncEventServer()
 end
 
 ------------------------------------------------------------------------------
