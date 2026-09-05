@@ -178,6 +178,9 @@ async def create_bumble_device(transport_spec=None, configure=None):
 
         await device.power_on()
         log.success(f"Device powered on: {device.public_address}")
+
+        # chip hook: bring-up is done, hand the chip back to its sleep protocol
+        chip().on_ready()
     except BaseException:
         try:
             await transport.close()
