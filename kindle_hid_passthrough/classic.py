@@ -20,6 +20,12 @@ from logging_utils import errstr, log
 # HIDP DATA header, OUTPUT report type.
 HIDP_DATA_OUTPUT = 0xA2
 
+# An incoming peer that runs its own security procedure signals it by
+# encrypting the link or opening the HID channels, both well inside 1 s on
+# the peers measured so far.
+CLASSIC_PEER_WINDOW = 1.0
+CLASSIC_PEER_CHANNEL_WAIT = 5.0
+
 FALLBACK_HID_DESCRIPTOR = bytes([
     0x05, 0x01, 0x09, 0x05, 0xa1, 0x01, 0x85, 0x01,
     0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x32, 0x09, 0x35,
@@ -32,6 +38,17 @@ FALLBACK_HID_DESCRIPTOR = bytes([
     0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x10, 0x81, 0x02,
     0xc0,
 ])
+
+
+async def _wait_until(check, timeout, interval=0.05):
+    """Poll check() until it is true or the timeout expires."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if check():
+            return True
+        await asyncio.sleep(interval)
+    return False
 
 
 class ClassicHIDChannels:
@@ -196,24 +213,38 @@ class ClassicMixin:
         if old is not None:
             await self._teardown_session(old)
 
-        if connection.role != Role.CENTRAL:
-            log.info("[Classic] Requesting role switch to central...")
-            try:
-                await asyncio.wait_for(connection.switch_role(Role.CENTRAL), timeout=5.0)
-                log.success("[Classic] Role switch complete, now central")
-            except Exception as e:
-                log.warning(f"[Classic] Role switch failed: {errstr(e)}")
-
-        if not connection.is_encrypted:
-            log.info("[Classic] Restoring bonding (authenticate + encrypt)...")
-            try:
-                await asyncio.wait_for(connection.authenticate(), timeout=5.0)
-                await asyncio.wait_for(connection.encrypt(enable=True), timeout=5.0)
-                log.success("[Classic] Bonding restored")
-            except Exception as e:
-                log.warning(f"[Classic] Bonding restore failed: {errstr(e)}")
-
         channels = session.channels
+
+        peer_driving = connection.role != Role.CENTRAL and await _wait_until(
+            lambda: connection.is_encrypted or channels.intr_channel,
+            CLASSIC_PEER_WINDOW)
+
+        if peer_driving:
+            log.info("[Classic] Peer is driving the connection, standing by")
+            if not channels.intr_channel:
+                log.info("[Classic] Waiting for the peer to open the HID channels...")
+                if await _wait_until(lambda: channels.intr_channel, CLASSIC_PEER_CHANNEL_WAIT):
+                    log.success("[Classic] Peer opened the HID channels")
+                else:
+                    log.info("[Classic] Peer did not open them, paging outward")
+        else:
+            if connection.role != Role.CENTRAL:
+                log.info("[Classic] Requesting role switch to central...")
+                try:
+                    await asyncio.wait_for(connection.switch_role(Role.CENTRAL), timeout=5.0)
+                    log.success("[Classic] Role switch complete, now central")
+                except Exception as e:
+                    log.warning(f"[Classic] Role switch failed: {errstr(e)}")
+
+            if not connection.is_encrypted:
+                log.info("[Classic] Restoring bonding (authenticate + encrypt)...")
+                try:
+                    if not connection.authenticated:
+                        await asyncio.wait_for(connection.authenticate(), timeout=5.0)
+                    await asyncio.wait_for(connection.encrypt(enable=True), timeout=5.0)
+                    log.success("[Classic] Bonding restored")
+                except Exception as e:
+                    log.warning(f"[Classic] Bonding restore failed: {errstr(e)}")
 
         if not channels.ctrl_channel:
             log.info("[Classic] Connecting to HID control channel...")
@@ -240,6 +271,8 @@ class ClassicMixin:
             await self._query_classic_sdp(session)
 
         self._finalize_classic_hid(session)
+        if not connection.is_encrypted:
+            log.warning("[Classic] Link is not encrypted, the peer may drop it")
         log.success(f"[Classic] {self._format_device(session.address)} receiving HID reports")
 
     def _is_classic_allowed(self, addr_str: str) -> bool:
