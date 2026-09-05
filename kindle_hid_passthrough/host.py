@@ -2,6 +2,7 @@
 """HID Host — runs BLE + Classic handlers on a single Bumble device."""
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -69,6 +70,7 @@ class DeviceSession:
         self.raw_address = str(connection.peer_address)
         self.protocol = protocol
         self.connection = connection
+        self.connected_at = time.monotonic()
         self.peer = None
         self.channels = None
         self.uhid_loop = None
@@ -617,8 +619,12 @@ class HIDHost(ClassicMixin, BLEMixin):
 
     def _on_session_disconnection(self, session: DeviceSession, reason):
         proto = session.protocol.value.upper()
+        uptime = time.monotonic() - session.connected_at
+        state = "encrypted" if getattr(session.connection, 'is_encrypted', False) \
+            else "unencrypted"
         log.warning(f"[{proto}] Device disconnected: {session.address} "
-                    f"(reason={reason} {HCI_Constant.error_name(reason)})")
+                    f"(reason={reason} {HCI_Constant.error_name(reason)}) "
+                    f"after {uptime:.1f}s {state}")
 
         if reason == 5 and session.protocol == Protocol.CLASSIC:
             log.info("[Classic] Authentication failure - will clear stale key and retry")

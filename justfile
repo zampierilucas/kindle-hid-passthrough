@@ -151,6 +151,7 @@ test:
     python3 {{src_dir}}/tests/test_hci_parser.py
     python3 {{src_dir}}/tests/test_cpu_latency.py
     python3 {{src_dir}}/tests/test_power_policy.py
+    python3 {{src_dir}}/tests/test_classic_reconnect.py
 
 # Run mock API server for local WAF app testing
 mock-server:
