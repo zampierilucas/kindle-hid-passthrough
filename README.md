@@ -74,7 +74,7 @@ kpm install kindle-hid-passthrough
 
 ### Manual install
 
-1. Download the latest release from [GitHub Releases](https://github.com/zampierilucas/kindle-hid-passthrough/releases) ([direct download](https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough-armv7.tar.gz)) and unpack it somewhere other than the install directory:
+1. Download the latest release from [GitHub Releases](https://github.com/zampierilucas/kindle-hid-passthrough/releases) ([direct download](https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough-armv7.tar.xz)) and unpack it somewhere other than the install directory:
    ```bash
    curl -L -o kindle-hid-passthrough-armv7.tar.xz https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough-armv7.tar.xz
    mkdir -p /mnt/us/khp-release
