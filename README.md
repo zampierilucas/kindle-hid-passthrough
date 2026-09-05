@@ -45,19 +45,21 @@ As this project replaces the original Bluetooth stack, you can't use the default
 - [Hotfix](https://github.com/KindleModding/Hotfix/releases/tag/v2.3.7) (only for BTManager) — it's what gives the Kindle scriptlet support, and without it the BTManager entry never shows up on the home screen. Kindles jailbroken with older methods don't have scriptlets at all.
 
 > [!IMPORTANT]
-> **Setting up [usbnetlite](https://github.com/notmarek/kindle-usbnetlite) first is highly encouraged.** This project touches Bluetooth, udev and upstart, all of which run early enough in boot that a bad state can leave a Kindle stuck on a white screen. Modern Kindles have no serial pads, so USB networking is the only way back in.
+> **Setting up [usbnetlite](https://github.com/notmarek/kindle-usbnetlite#installation-instructions) first is highly encouraged.** This project touches Bluetooth, udev and upstart, all of which run early enough in boot that a bad state can leave a Kindle stuck on a white screen. Modern Kindles have no serial pads, so USB networking is the only way back in.
 
 Kernels without UHID support are handled automatically: the daemon loads a bundled `uhid.ko` at startup (see [Kernel Modules](#kernel-modules)).
 
 ## Installation
 
+<!--
 ### Video guide
 
 Community walkthrough by [@jencaps89](https://www.tiktok.com/@jencaps89) showing the whole setup as a Bluetooth page turner, [watch it on TikTok](https://www.tiktok.com/@jencaps89/video/7658167614736223496) or through the [embedded player](https://www.tiktok.com/player/v1/7658167614736223496) if you'd rather not log in.
+-->
 
 ### KPM (recommended)
 
-If you have [KPM](https://kindlemodding.org/kindle-dev/kpm/) installed, add this repository once and install:
+If you have [KPM](https://kindlemodding.org/kindle-dev/kpm/) installed ([how to get it](https://kindlemodding.org/jailbreaking/whats-next/installing-homebrew.html#kpm)), add this repository once and install:
 
 ```bash
 kpm add-repo https://raw.githubusercontent.com/zampierilucas/kindle-hid-passthrough/main/kpm/repo.json
@@ -72,7 +74,7 @@ kpm install kindle-hid-passthrough
 
 ### Manual install
 
-1. Download the latest release from [GitHub Releases](https://github.com/zampierilucas/kindle-hid-passthrough/releases) and unpack it somewhere other than the install directory:
+1. Download the latest release from [GitHub Releases](https://github.com/zampierilucas/kindle-hid-passthrough/releases) ([direct download](https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough-armv7.tar.xz)) and unpack it somewhere other than the install directory:
    ```bash
    curl -L -o kindle-hid-passthrough-armv7.tar.xz https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough-armv7.tar.xz
    mkdir -p /mnt/us/khp-release
