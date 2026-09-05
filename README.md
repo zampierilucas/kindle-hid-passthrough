@@ -119,7 +119,7 @@ The **Start on boot** toggle at the bottom installs or removes the upstart job. 
 
 If you use KOReader, a bundled plugin gives you the same scan / pair / connect / disconnect / logs / cache controls from inside KOReader — no need to exit. Open via **cog icon (Settings) → Network → BT Manager - HID Passthrough**.
 
-It also maps keys. Press a button, a D-pad direction or a trigger and bind it to any KOReader action, or to one that keeps working with KOReader closed. Mappings run through the bundled Button Mapper, and the KOReader actions need KOReader's HTTP Inspector on.
+It also maps keys. Press a button, a D-pad direction or a trigger and bind it to any KOReader action, or to one that keeps working with KOReader closed. Mappings run through the bundled Button Mapper, which delivers KOReader actions straight to the plugin — no HTTP Inspector needed.
 
 <p align="center">
   <img src="koreader-plugin/screenshots/menu.png" width="48%" alt="Plugin menu">
