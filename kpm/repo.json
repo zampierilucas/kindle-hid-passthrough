@@ -10,7 +10,7 @@
       "description": "Userspace Bluetooth HID host. Pairs gamepads, keyboards and remotes and passes their input straight to Linux via UHID, with a touchscreen manager app and a KOReader plugin.",
       "artifacts": [
         {
-          "url": "https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough.kpkg",
+          "url": "https://github.com/zampierilucas/kindle-hid-passthrough/releases/download/v3.15.2/kindle-hid-passthrough.kpkg",
           "version": [
             3,
             15,

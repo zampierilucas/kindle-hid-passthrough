@@ -10,6 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 REPO = ROOT / 'kpm/repo.json'
 MANIFEST = ROOT / 'kpm/manifest.json'
+ARTIFACT_URL = ('https://github.com/zampierilucas/kindle-hid-passthrough'
+                '/releases/download/v{version}/kindle-hid-passthrough.kpkg')
 
 
 def version():
@@ -22,6 +24,7 @@ def manifests():
     pkg_id, pkg = next(iter(repo['packages'].items()))
     artifact = pkg['artifacts'][0]
     artifact['version'] = version()
+    artifact['url'] = ARTIFACT_URL.format(version='.'.join(str(n) for n in artifact['version']))
     manifest = {'manifest_version': 2, 'id': pkg_id, 'name': pkg['name'], 'author': pkg['author'],
                 'description': pkg['description'], 'version': artifact['version'],
                 'dependencies': artifact['dependencies'],

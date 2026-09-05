@@ -7,9 +7,15 @@ from typing import List, Optional
 
 from bumble.core import InvalidStateError
 from bumble.hci import (
+    HCI_CONNECTION_TIMEOUT_ERROR,
     HCI_LE_SET_PRIVACY_MODE_COMMAND,
+    HCI_SUCCESS,
+    HCI_UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
     HCI_Constant,
+    HCI_Disconnection_Complete_Event,
+    HCI_Error,
     HCI_LE_Set_Privacy_Mode_Command,
+    HCI_Read_RSSI_Command,
     HCI_Write_Class_Of_Device_Command,
     HCI_Write_Local_Name_Command,
     HCI_Write_Scan_Enable_Command,
@@ -20,7 +26,7 @@ from bt_setup import ensure_uhid
 from classic import ClassicMixin
 from config import Protocol, clean_device_name, config, get_version, normalize_addr
 from device_cache import DeviceCache
-from logging_utils import log
+from logging_utils import errstr, log
 from media_remote import MEDIA_REMOTE_COD, MediaRemote
 from pairing import create_keystore, create_pairing_config
 from transport import create_bumble_device
@@ -162,6 +168,7 @@ class HIDHost(ClassicMixin, BLEMixin):
     ACTIVE_CONNECT_TIMEOUT = 10
     FIRST_SESSION_TIMEOUT = 60.0
     SETUP_TIMEOUT = 45.0
+    LINK_PROBE_INTERVAL = 30.0
 
     def __init__(self, transport_spec: str = None):
         self.transport_spec = transport_spec or config.transport
@@ -484,6 +491,8 @@ class HIDHost(ClassicMixin, BLEMixin):
         if self.classic_devices or self.ble_devices:
             tasks.append(asyncio.create_task(
                 self._session_watchdog(), name="session_watchdog"))
+            tasks.append(asyncio.create_task(
+                self._link_probe(), name="link_probe"))
 
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -523,6 +532,60 @@ class HIDHost(ClassicMixin, BLEMixin):
             except asyncio.TimeoutError:
                 log.warning("Connection timeout - no device connected")
                 raise InvalidStateError("No device connected within timeout")
+
+    async def _link_probe(self):
+        """Drop sessions whose link died without a disconnection event.
+
+        Every teardown path hangs off that event, so a session that never
+        gets one is served forever: the API keeps reporting it connected and
+        the handlers never re-initiate. On MTK the controller stays quiet
+        across a suspend we did not bracket, which is any suspend whose
+        powerd event we missed (#180). Asking the controller about the
+        handle is the only answer that does not depend on being told.
+        """
+        while True:
+            await asyncio.sleep(self.LINK_PROBE_INTERVAL)
+            for session in list(self.sessions.values()):
+                if session.closed or not session.is_alive():
+                    continue
+                if await self._handle_is_live(session.connection.handle):
+                    continue
+                proto = session.protocol.value.upper()
+                log.warning(f"[{proto}] Link is gone for "
+                            f"{self._format_device(session.address)}, "
+                            f"dropping the session")
+                self._synthesize_disconnection(session.connection.handle)
+
+    async def _handle_is_live(self, handle) -> bool:
+        """Ask the controller whether it still knows this connection handle."""
+        try:
+            await self.device.host.send_command(
+                HCI_Read_RSSI_Command(handle=handle), check_result=True)
+            return True
+        except HCI_Error as e:
+            # An unsupported command or a busy controller says nothing about
+            # the link, so only the unknown handle counts as proof.
+            return e.error_code != HCI_UNKNOWN_CONNECTION_IDENTIFIER_ERROR
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.debug(f"Link probe for handle {handle}: {errstr(e)}")
+            return True
+
+    def _synthesize_disconnection(self, handle):
+        """Hand Bumble the event the controller owed us for this handle.
+
+        Bumble drops the connection and emits it on to the listener that
+        `_register_session` already installed, so the session leaves by the
+        one path every other disconnect uses, rather than through a second
+        teardown entry point that would have to keep up with it.
+        """
+        self.device.host.on_hci_disconnection_complete_event(
+            HCI_Disconnection_Complete_Event(
+                status=HCI_SUCCESS,
+                connection_handle=handle,
+                reason=HCI_CONNECTION_TIMEOUT_ERROR,
+            ))
 
     def _notify_sessions_changed(self):
         if self._sessions_changed:
