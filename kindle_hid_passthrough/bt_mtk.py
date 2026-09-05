@@ -113,7 +113,7 @@ def _find_holders(device_path):
 def _graceful_kill(h, settle, device_path):
     """SIGTERM an unknown holder, then SIGKILL only if it clings to the node."""
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        if _is_device_free(device_path):
+        if not _find_holders(device_path):
             return
         try:
             os.kill(int(h['pid']), sig)
@@ -149,18 +149,8 @@ def _evict_holders(device_path, settle):
         time.sleep(settle)
 
     for h in holders:
-        if h['comm'] not in _STOCK_BT_JOBS and not _is_device_free(device_path):
+        if h['comm'] not in _STOCK_BT_JOBS and _find_holders(device_path):
             _graceful_kill(h, settle, device_path)
-
-
-def _is_device_free(device_path):
-    """Check if the BT device can be opened."""
-    try:
-        fd = os.open(device_path, os.O_RDWR | os.O_NONBLOCK)
-        os.close(fd)
-        return True
-    except OSError:
-        return False
 
 
 class MtkChip(BtChip):
@@ -188,19 +178,19 @@ class MtkChip(BtChip):
         if not os.path.exists(device_path):
             log.warning(f"{device_path} does not exist")
             return False
-        if _is_device_free(device_path):
+        if not _find_holders(device_path):
             log.info(f"{device_path} is available")
             return True
 
         log.info(f"{device_path} is busy, identifying and evicting holders...")
         _evict_holders(device_path, settle)
-        if _is_device_free(device_path):
+        if not _find_holders(device_path):
             log.info(f"{device_path} is now available")
             return True
 
         log.warning(f"{device_path} still busy, waiting 2s...")
         time.sleep(2.0)
-        if _is_device_free(device_path):
+        if not _find_holders(device_path):
             log.info(f"{device_path} is now available")
             return True
 
