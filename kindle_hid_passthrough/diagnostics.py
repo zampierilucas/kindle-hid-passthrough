@@ -9,6 +9,7 @@ Safe to run at any time: nothing here writes to the chip or the UART.
 import os
 import subprocess
 
+from bt_setup import _node_ready
 from config import config, get_version
 from kindle_detect import (detect_codename, detect_kindle, read_serial,
                            _decode_device_code)
@@ -152,7 +153,8 @@ def run_diagnostics():
     _kv("daemon (main.py)", _sh(['pgrep', '-f', 'main.py --daemon']) or "not running")
 
     _hdr("UHID")
-    _kv("/dev/uhid", os.path.exists('/dev/uhid'))
+    _kv("/dev/uhid", _node_ready('/dev/uhid'))
+    _kv("/dev/uinput", _node_ready('/dev/uinput'))
     _kv("/sys/bus/hid", os.path.exists('/sys/bus/hid'))
     _kv("modules", _sh(['sh', '-c', 'lsmod | grep -iE "uhid|hidp|^hid|bt" || true']) or "<none>")
 
