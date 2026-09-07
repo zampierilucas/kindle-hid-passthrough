@@ -15,7 +15,7 @@ from api_server import PORT, APIServer, RequestHandler
 from bt_setup import chip, prepare_bt
 from config import config, get_version
 from controller import DaemonController
-from host import HIDHost
+from host import HIDHost, NoDeviceEverConnected
 from logging_utils import errstr, log, setup_daemon_logging
 from power_monitor import PowerMonitor
 from scanner import Scanner
@@ -35,6 +35,7 @@ class HIDDaemon:
         self._suspended = False
         self._resume_event = asyncio.Event()
         self._paired_host = None
+        self._watch_first_session = True
         # Set in main(): called with True/False as a pointer device connects/leaves.
         self.on_pointer_change = None
 
@@ -118,6 +119,7 @@ class HIDDaemon:
         """Resume connections after scan/pair."""
         logger.info("Daemon resuming...")
         self._suspended = False
+        self._watch_first_session = True
         self._resume_event.set()
 
     def _has_devices(self, log_details=False) -> bool:
@@ -180,6 +182,7 @@ class HIDDaemon:
                     logger.info("=== Starting connection ===")
                     self.host = HIDHost()
                     self.host.on_pointer_change = self.on_pointer_change
+                    self.host.watch_first_session = self._watch_first_session
                     self._host_task = asyncio.create_task(
                         self.host.run()
                     )
@@ -193,6 +196,10 @@ class HIDDaemon:
                     break
                 else:
                     logger.info("Connection cancelled, will reconnect")
+
+            except NoDeviceEverConnected:
+                self._watch_first_session = False
+                logger.info("Nothing connected yet, rebuilding once more")
 
             except Exception as e:
                 logger.error(f"Error: {errstr(e)}")
