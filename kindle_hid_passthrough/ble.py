@@ -109,6 +109,7 @@ class BLEMixin:
                             config.connect_timeout, peer=target_address)
 
                 if connection is None:
+                    await asyncio.sleep(self.ACTIVE_RETRY_INTERVAL)
                     continue
 
                 self._admit_ble_connection(connection, matched_dev, match_kind)
