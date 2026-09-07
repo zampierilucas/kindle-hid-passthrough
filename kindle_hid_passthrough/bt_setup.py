@@ -90,6 +90,15 @@ def _log_missing_kmod(codename, expected=None, mod='uhid', optional=False):
         say("  ^ open an issue with these lines so we can compile the module")
 
 
+def _node_ready(path):
+    """True when the node exists and the driver behind it opens."""
+    try:
+        os.close(os.open(path, os.O_RDWR | os.O_NONBLOCK))
+        return True
+    except OSError:
+        return False
+
+
 def _create_dev_node(sysfs_dev, dev_path):
     """Create a char device node from a sysfs 'major:minor' dev attribute.
 
@@ -124,7 +133,7 @@ def _ensure_hid_core(kernel, build, codename):
 
 def ensure_uhid():
     """Load bundled uhid.ko on Kindles whose stock kernel lacks CONFIG_UHID."""
-    if os.path.exists('/dev/uhid'):
+    if _node_ready('/dev/uhid'):
         return True
     codename = detect_codename()
     if not codename:
@@ -145,9 +154,9 @@ def ensure_uhid():
         if not run(['/sbin/insmod', ko]):
             continue
         # duet lacks devtmpfs, so misc_register doesn't create /dev/uhid
-        if not os.path.exists('/dev/uhid'):
+        if not _node_ready('/dev/uhid'):
             _create_dev_node('/sys/class/misc/uhid/dev', '/dev/uhid')
-        if os.path.exists('/dev/uhid'):
+        if _node_ready('/dev/uhid'):
             return True
     _log_missing_kmod(codename, expected)
     return False
@@ -155,10 +164,10 @@ def ensure_uhid():
 
 def ensure_uinput():
     """Best-effort /dev/uinput: stock module, then bundled .ko, else explain."""
-    if os.path.exists('/dev/uinput'):
+    if _node_ready('/dev/uinput'):
         return True
     # Device may ship uinput.ko itself (in /lib/modules) even if not built-in.
-    if run(['/sbin/modprobe', 'uinput']) and os.path.exists('/dev/uinput'):
+    if run(['/sbin/modprobe', 'uinput']) and _node_ready('/dev/uinput'):
         return True
     codename = detect_codename()
     build = _read_firmware_build() if codename else None
@@ -170,9 +179,9 @@ def ensure_uinput():
             log.info(f"loading {os.path.basename(ko)}")
             if not run(['/sbin/insmod', ko]):
                 continue
-            if not os.path.exists('/dev/uinput'):
+            if not _node_ready('/dev/uinput'):
                 _create_dev_node('/sys/class/misc/uinput/dev', '/dev/uinput')
-            if os.path.exists('/dev/uinput'):
+            if _node_ready('/dev/uinput'):
                 return True
     _log_missing_kmod(codename, expected, mod='uinput', optional=True)
     return False
