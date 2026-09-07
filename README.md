@@ -62,7 +62,7 @@ Community walkthrough by [@jencaps89](https://www.tiktok.com/@jencaps89) showing
 If you have [KPM](https://kindlemodding.org/kindle-dev/kpm/) installed ([how to get it](https://kindlemodding.org/jailbreaking/whats-next/installing-homebrew.html#kpm)), add this repository once and install:
 
 ```bash
-kpm add-repo https://raw.githubusercontent.com/zampierilucas/kindle-hid-passthrough/main/kpm/repo.json
+kpm add-repo lzampier.com/hid
 kpm install kindle-hid-passthrough
 ```
 
