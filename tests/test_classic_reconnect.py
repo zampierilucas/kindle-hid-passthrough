@@ -63,6 +63,7 @@ def _stub_bumble():
 _stub_bumble()
 
 import classic  # noqa: E402
+from config import Protocol  # noqa: E402
 from bumble.hci import HCI_Error, Role  # noqa: E402
 
 COLLISION = 0x2A
@@ -142,6 +143,7 @@ class FakeSession:
         self.channels = FakeChannels(calls)
         self.setup_task = None
         self.ready = False
+        self.protocol = Protocol.CLASSIC
 
 
 class FakeHost(classic.ClassicMixin):

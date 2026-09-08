@@ -188,7 +188,8 @@ def main():
                         help='Run as daemon with auto-reconnect + API server')
     parser.add_argument('--address', type=str,
                         help='Device address (overrides devices.conf)')
-    parser.add_argument('--protocol', type=str, choices=['ble', 'classic'],
+    parser.add_argument('--protocol', type=str,
+                        choices=['ble', 'classic', 'classic_audio'],
                         help='Filter by protocol (pairing) or override (run)')
     parser.add_argument('--sequential', action='store_true',
                         help='Scan BLE and Classic sequentially')
@@ -217,7 +218,10 @@ def main():
 
     protocol_override = None
     if args.protocol:
-        protocol_override = Protocol.CLASSIC if args.protocol == 'classic' else Protocol.BLE
+        try:
+            protocol_override = Protocol(args.protocol)
+        except ValueError:
+            protocol_override = Protocol.CLASSIC if args.protocol == 'classic' else Protocol.BLE
 
     if args.pair:
         asyncio.run(pair_mode(protocol_override, sequential=args.sequential))

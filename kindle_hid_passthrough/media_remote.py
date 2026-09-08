@@ -51,6 +51,19 @@ class _Delegate(avrcp.Delegate):
         super().__init__(supported_events=[avrcp.EventId.VOLUME_CHANGED])
         self.remote = remote
         self.volume = RECENTER_VOLUME
+        self._also = None
+
+    def chain_key_events_to(self, delegate):
+        """Also hand passthrough keys to another delegate.
+
+        The protocol holds one delegate, and both consumers need something
+        from it: this one declares VOLUME_CHANGED and implements
+        set_absolute_volume, the host's turns media keys into HID reports.
+        Keeping this one and forwarding keys preserves both; wrapping them in
+        a plain multiplexer lost supported_events and the volume override,
+        which silently disabled page turns from the phone.
+        """
+        self._also = delegate if delegate is not self else None
 
     async def set_absolute_volume(self, volume: int) -> None:
         previous = self.volume
@@ -59,6 +72,8 @@ class _Delegate(avrcp.Delegate):
 
     async def on_key_event(self, key, pressed, data) -> None:
         self.remote.on_passthrough(key, pressed)
+        if self._also is not None:
+            await self._also.on_key_event(key, pressed, data)
 
 
 class MediaRemote:
@@ -73,25 +88,37 @@ class MediaRemote:
         self._recenter_handle = None
         self._grace_until = 0.0
 
-    def setup(self, device):
+    def setup(self, device, listener=None, avrcp_protocol=None):
         """Register SDP records and profile listeners on the bumble device.
 
         Must run inside the event loop: avrcp.Protocol creates futures.
         """
-        device.sdp_service_records = {
-            0x00010001: a2dp.make_audio_sink_service_sdp_records(0x00010001),
-            0x00010002: avrcp.ControllerServiceSdpRecord(
-                0x00010002).to_service_attributes(),
-            0x00010003: avrcp.TargetServiceSdpRecord(
-                0x00010003,
+        # update, not assignment: the host publishes the A2DP Source record
+        # before calling this, and replacing the dict dropped it -- the Kindle
+        # then advertised a sink and no source. Handles must not collide with
+        # the host's 0x00010002 either.
+        device.sdp_service_records.update({
+            0x00010011: a2dp.make_audio_sink_service_sdp_records(0x00010011),
+            0x00010012: avrcp.ControllerServiceSdpRecord(
+                0x00010012).to_service_attributes(),
+            0x00010013: avrcp.TargetServiceSdpRecord(
+                0x00010013,
                 supported_features=(avrcp.TargetFeatures.CATEGORY_1
                                     | avrcp.TargetFeatures.CATEGORY_2),
             ).to_service_attributes(),
-        }
-        listener = avdtp.Listener.for_device(device)
+        })
+        if listener is None:
+            listener = avdtp.Listener.for_device(device)
         listener.on(listener.EVENT_CONNECTION, self._on_avdtp_connection)
-        self.avrcp = avrcp.Protocol(delegate=self.delegate)
-        self.avrcp.listen(device)
+
+        if avrcp_protocol is None:
+            self.avrcp = avrcp.Protocol(delegate=self.delegate)
+            self.avrcp.listen(device)
+        else:
+            self.avrcp = avrcp_protocol
+            self.delegate.chain_key_events_to(self.avrcp.delegate)
+            self.avrcp.delegate = self.delegate
+
         log.info("[Media] Remote ready (A2DP sink + AVRCP target)")
 
     def adopt(self, connection):

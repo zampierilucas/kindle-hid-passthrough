@@ -288,6 +288,17 @@ async def main():
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, on_signal)
 
+    def handle_exception(loop, context):
+        msg = context.get("exception", context["message"])
+        logger.error(f"Unhandled exception in asyncio loop: {msg}")
+        # An L2CAP write racing an ACL teardown surfaces here whenever a peer
+        # goes out of range. It is not fatal: the reconnect loop handles it,
+        # and shutdown.set() only exits the process -- which upstart respawns,
+        # counting towards the boot_attempts limit that permanently disables
+        # autostart after three tries.
+
+    loop.set_exception_handler(handle_exception)
+
     log.info(f"Kindle HID Passthrough v{get_version()} (daemon)")
     daemon_task = asyncio.create_task(daemon.run())
 

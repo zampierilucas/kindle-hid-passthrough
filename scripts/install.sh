@@ -370,6 +370,14 @@ uninstallAll()
   echo " -> Removing upstart config"
   rm -f /etc/upstart/hid-passthrough.conf
 
+  # The audio switch installs and removes the wrapper itself. This is the
+  # net for uninstalling with the switch still on, which never runs the
+  # teardown script.
+  echo " -> Removing GST audio wrapper"
+  if [ -f /usr/bin/gst-launch-0.10.real ]; then
+    mv /usr/bin/gst-launch-0.10.real /usr/bin/gst-launch-0.10
+  fi
+
   echo " -> Removing udev rules"
   rm -f /etc/udev/rules.d/99-hid-keyboard.rules
   if [ -f /usr/local/bin/dev_is_keyboard.sh ]; then
