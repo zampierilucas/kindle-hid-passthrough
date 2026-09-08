@@ -100,6 +100,19 @@ function M.getConfig()
     return request("GET", "/config")
 end
 
+-- Read-only view of the config, for decisions that have to be right before
+-- anything has spawned the helper. The helper owns the file and writes it on
+-- every POST, so the file is never behind. Edits still go through the helper.
+function M.configText()
+    local f = io.open(M.CONFIG, "r")
+    if f then
+        local text = f:read("*a")
+        f:close()
+        if text and text ~= "" then return text end
+    end
+    return M.getConfig()
+end
+
 function M.setConfig(text)
     return requestJson("POST", "/config", text)
 end
@@ -113,10 +126,42 @@ function M.actions()
     return data and data.actions, err
 end
 
+-- The helper is spawned on demand, so at the moment a device connects there
+-- is nothing listening on the port yet and every question asked over HTTP
+-- comes back nil. That is the one moment the answer has to be right, so read
+-- the kernel's own list instead: it needs no process, it is never late, and
+-- it carries the same two fields the helper reports.
+local PROC_DEVICES = "/proc/bus/input/devices"
+
+local function procNodes()
+    local f = io.open(PROC_DEVICES, "r")
+    if not f then return {} end
+    local out, uniq = {}, nil
+    for line in f:lines() do
+        if line:match("^%s*$") then
+            uniq = nil
+        else
+            local u = line:match("^U:%s*Uniq=(.-)%s*$")
+            if u then uniq = u end
+            local handlers = line:match("^H:%s*Handlers=(.*)$")
+            if handlers then
+                for ev in handlers:gmatch("event%d+") do
+                    out[#out + 1] = { path = "/dev/input/" .. ev, uniq = uniq or "" }
+                end
+            end
+        end
+    end
+    f:close()
+    return out
+end
+
 -- Evdev node path for a registered device, nil when it isn't connected.
 -- The reverse of findNode: which device a node belongs to. Used to decide
 -- whether KOReader should keep its hands off that node.
 function M.uniqForNode(path)
+    for dummy, dev in ipairs(procNodes()) do -- luacheck: ignore dummy
+        if dev.path == path and dev.uniq ~= "" then return dev.uniq end
+    end
     local data = requestJson("GET", "/devices")
     if not data then return nil end
     for _, dev in ipairs(data.devices or {}) do
@@ -127,9 +172,12 @@ function M.uniqForNode(path)
 end
 
 function M.findNode(uniq)
+    local want = M.bareAddr(uniq)
+    for dummy, dev in ipairs(procNodes()) do -- luacheck: ignore dummy
+        if dev.uniq ~= "" and M.bareAddr(dev.uniq) == want then return dev.path end
+    end
     local data = requestJson("GET", "/devices")
     if not data then return nil end
-    local want = M.bareAddr(uniq)
     for _, dev in ipairs(data.devices or {}) do
         if dev.uniq and dev.uniq ~= "" and M.bareAddr(dev.uniq) == want then
             return dev.path

@@ -219,7 +219,7 @@ function HIDPassthrough:_mapperGrabs(path)
     if not mapper.installed() then return false end
     local uniq = mapper.uniqForNode(path)
     if not uniq or uniq == "" then return false end
-    local text = mapper.getConfig()
+    local text = mapper.configText()
     if not text then return false end
     local want = mapper.bareAddr(uniq)
     for dummy, dev in ipairs(mapper.deviceBlocks(text)) do -- luacheck: ignore dummy
@@ -266,6 +266,18 @@ end
 -- closed this one behind its back and will not re-adopt without a reconnect.
 -- So open it here regardless of type rather than leave the device dead.
 function HIDPassthrough:_reclaimInput(path)
+    -- Both callers decide to reclaim and then wait a second and a half, long
+    -- enough for the mode to have changed underneath them, and neither has
+    -- any business taking a node the mapper owns. The config is the authority,
+    -- so ask it again here rather than trust what was true when the timer was
+    -- set. Not reclaiming is the right outcome, not a failure, hence true:
+    -- false is what puts a "reconnect the device" message on screen.
+    if self:_mapperGrabs(path) then
+        logger.info("HIDPassthrough: not taking", path,
+            "back, Button Mapper grabs this device")
+        return true
+    end
+
     local FBInkInput = ffi.loadlib("fbink_input", 1)
     local dev = FBInkInput.fbink_input_check(path, C.INPUT_KEY, 0, 0)
     if dev == nil then return false end
