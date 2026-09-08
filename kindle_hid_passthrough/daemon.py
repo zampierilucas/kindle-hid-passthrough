@@ -148,6 +148,7 @@ class HIDDaemon:
         logger.info(f"HID Daemon v{get_version()}")
 
         while self.running:
+            fault = False
             # Wait for devices if none configured or after suspend
             if self._suspended:
                 logger.info("Daemon suspended, waiting for resume...")
@@ -202,6 +203,7 @@ class HIDDaemon:
                 logger.info("Nothing connected yet, rebuilding once more")
 
             except Exception as e:
+                fault = True
                 logger.error(f"Error: {errstr(e)}")
 
             finally:
@@ -223,11 +225,14 @@ class HIDDaemon:
             if self._suspended:
                 continue
 
-            logger.info(f"Reconnecting in {config.reconnect_delay}s...")
+            delay = config.reconnect_delay
+            if fault:
+                delay = max(delay, chip().fault_settle_time)
+            logger.info(f"Reconnecting in {delay}s...")
             try:
                 await asyncio.wait_for(
                     self._resume_event.wait(),
-                    timeout=config.reconnect_delay
+                    timeout=delay
                 )
                 # Resume event fired during delay, go back to top
                 self._resume_event.clear()

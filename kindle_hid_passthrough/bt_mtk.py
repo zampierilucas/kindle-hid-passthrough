@@ -154,6 +154,8 @@ def _evict_holders(device_path, settle):
 
 
 class MtkChip(BtChip):
+    fault_settle_time = 10.0
+
     def prepare(self):
         device_path = self.kindle.device_path if self.kindle else '/dev/stpbt'
         settle = config.bt_settle_time
