@@ -36,6 +36,9 @@ HID_REPORT_TYPE_OUTPUT = 2
 # Re-read the battery level this often, for devices that never notify.
 BATTERY_POLL_INTERVAL = 300
 
+LE_SCAN_WINDOW_MS = 60
+LE_SCAN_INTERVAL_MS = 320
+
 
 class BLEMixin:
     """BLE methods for HIDHost."""
@@ -106,6 +109,7 @@ class BLEMixin:
                             config.connect_timeout, peer=target_address)
 
                 if connection is None:
+                    await asyncio.sleep(self.ACTIVE_RETRY_INTERVAL)
                     continue
 
                 self._admit_ble_connection(connection, matched_dev, match_kind)
@@ -233,8 +237,8 @@ class BLEMixin:
 
             await self.device.send_command(
                 HCI_LE_Create_Connection_Command(
-                    le_scan_interval=96,
-                    le_scan_window=96,
+                    le_scan_interval=int(LE_SCAN_INTERVAL_MS / 0.625),
+                    le_scan_window=int(LE_SCAN_WINDOW_MS / 0.625),
                     initiator_filter_policy=0 if peer is not None else 1,
                     peer_address_type=peer.address_type if peer is not None else 0,
                     peer_address=peer if peer is not None else Address.ANY,
@@ -285,6 +289,8 @@ class BLEMixin:
                 legacy=True,
                 own_address_type=OwnAddressType.PUBLIC,
                 filter_duplicates=True,
+                scan_interval=LE_SCAN_INTERVAL_MS,
+                scan_window=LE_SCAN_WINDOW_MS,
             )
             scanning = True
             try:
@@ -385,7 +391,10 @@ class BLEMixin:
 
             try:
                 async with self._radio_lock:
-                    await self.device.start_scanning()
+                    await self.device.start_scanning(
+                        scan_interval=LE_SCAN_INTERVAL_MS,
+                        scan_window=LE_SCAN_WINDOW_MS,
+                    )
                     for _ in range(20):
                         if found_device:
                             break
