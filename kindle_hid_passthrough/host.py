@@ -2,15 +2,22 @@
 """HID Host — runs BLE + Classic handlers on a single Bumble device."""
 
 import asyncio
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
 from bumble import avc, avrcp
 from bumble.core import InvalidStateError
 from bumble.hci import (
+    HCI_CONNECTION_TIMEOUT_ERROR,
     HCI_LE_SET_PRIVACY_MODE_COMMAND,
+    HCI_SUCCESS,
+    HCI_UNKNOWN_CONNECTION_IDENTIFIER_ERROR,
     HCI_Constant,
+    HCI_Disconnection_Complete_Event,
+    HCI_Error,
     HCI_LE_Set_Privacy_Mode_Command,
+    HCI_Read_RSSI_Command,
     HCI_Write_Class_Of_Device_Command,
     HCI_Write_Local_Name_Command,
     HCI_Write_Scan_Enable_Command,
@@ -38,6 +45,24 @@ class DeviceConfig:
     name: Optional[str] = None
 
 
+# Controllers whose indicator lights never settle until a host tells them to.
+# Matched on the device name, since Bluetooth HID hands us no vendor id. The
+# last two fields are the byte holding the light mask, which the toggle
+# rewrites, and the byte holding the packet counter, or None where there is
+# none.
+DEFAULT_OUTPUT_REPORTS = (
+    # Nintendo Joy-Con and Pro Controller. Report 0x01 carries a packet
+    # counter, eight neutral rumble bytes, then subcommand 0x30 (player
+    # lights) lighting player 1. Left alone they chase all four forever.
+    (('joy-con', 'pro controller'),
+     bytes.fromhex('01000001404000014040' '3001'), 11, 1),
+)
+
+# Light mask values, low nibble is the lights held solid.
+LIGHTS_ON = 0x01
+LIGHTS_OFF = 0x00
+
+
 class DeviceSession:
     """Live state for one connected device, keyed by normalized address."""
 
@@ -46,9 +71,12 @@ class DeviceSession:
         self.raw_address = str(connection.peer_address)
         self.protocol = protocol
         self.connection = connection
+        self.connected_at = time.monotonic()
         self.peer = None
         self.channels = None
         self.uhid_loop = None
+        self.lights_on = None
+        self.report_counter = 0
         self.name = None
         self.report_map: Optional[bytes] = None
         self.hid_reports = []
@@ -91,6 +119,8 @@ class DeviceSession:
         if self.battery_level is not None:
             entry["battery_level"] = self.battery_level
             entry["battery_updated"] = self.battery_updated
+        if self.lights_on is not None:
+            entry["lights"] = self.lights_on
         return entry
 
     async def cleanup(self):
@@ -104,10 +134,6 @@ class DeviceSession:
                 if self.uhid_loop and self.uhid_device.fd is not None:
                     self.uhid_loop.remove_reader(self.uhid_device.fd)
                     self.uhid_loop = None
-                try:
-                    self.uhid_device.destroy()
-                except Exception:
-                    pass
                 self.uhid_device = None
             if self.channels:
                 if self.is_alive():
@@ -199,6 +225,7 @@ class HIDHost(ClassicMixin, BLEMixin):
     ACTIVE_CONNECT_TIMEOUT = 10
     FIRST_SESSION_TIMEOUT = 60.0
     SETUP_TIMEOUT = 45.0
+    LINK_PROBE_INTERVAL = 30.0
 
     def __init__(self, transport_spec: str = None):
         self.transport_spec = transport_spec or config.transport
@@ -218,6 +245,7 @@ class HIDHost(ClassicMixin, BLEMixin):
 
         self.keystore = create_keystore(config.pairing_keys_file)
         self.device_cache = DeviceCache(config.cache_dir)
+        self._uhid_nodes: dict = {}
         self.media_remote = (MediaRemote(self._notify_sessions_changed)
                              if config.media_remote_enabled else None)
         self._discoverable_task = None
@@ -238,29 +266,128 @@ class HIDHost(ClassicMixin, BLEMixin):
             connections += self.media_remote.state_list()
         return {"connected": bool(connections), "connections": connections}
 
-    def _on_uhid_output(self, session: DeviceSession):
-        """Pass a hidraw write on to the device it was written for.
+    def send_output_report(self, session: DeviceSession, payload: bytes) -> bool:
+        """Send one output report to a connected device, True if it went out.
 
         Classic takes the whole payload on the interrupt channel. BLE splits
-        it: hidraw always prefixes the report id, while HID over GATT carries
-        the id in the Report Reference descriptor and the characteristic holds
-        the body alone.
+        it, because hidraw always prefixes the report id while HID over GATT
+        carries the id in the Report Reference descriptor and the
+        characteristic holds the body alone.
         """
+        if session.channels:
+            # ponytail: Classic reports True on any write. HIDP DATA is
+            # fire-and-forget, so a device that ignores the report looks the
+            # same as one that took it. Switch to a GET_REPORT read-back if a
+            # controller ever needs the distinction.
+            session.channels.send_output_report(payload)
+            return True
+        if session.peer:
+            char = session.output_reports.get(payload[0])
+            if char is None:
+                log.debug(f"No BLE output report {payload[0]}")
+                return False
+            asyncio.ensure_future(
+                session.peer.write_value(char, payload[1:], with_response=False))
+            return True
+        return False
+
+    def _on_uhid_output(self, session: DeviceSession):
+        """Pass a hidraw write on to the device it was written for."""
         payload = session.uhid_device.read_output_report() if session.uhid_device else None
         if not payload:
             return
         try:
-            if session.channels:
-                session.channels.send_output_report(payload)
-            elif session.peer:
-                char = session.output_reports.get(payload[0])
-                if char is None:
-                    log.debug(f"No BLE output report {payload[0]}")
-                    return
-                asyncio.ensure_future(
-                    session.peer.write_value(char, payload[1:], with_response=False))
+            self.send_output_report(session, payload)
         except Exception as e:
             log.debug(f"Output report not forwarded: {e}")
+
+    def _light_entry(self, session: DeviceSession):
+        """This device's built-in light report, its mask and counter offsets."""
+        name = (self._configured_name(session.address) or session.name or '').lower()
+        for names, payload, mask_index, counter_index in DEFAULT_OUTPUT_REPORTS:
+            if any(n in name for n in names):
+                return payload, mask_index, counter_index
+        return None
+
+    @staticmethod
+    def _build_light_report(session: DeviceSession, entry, on: bool) -> bytes:
+        """Set the light mask, and stamp the packet counter where there is one.
+
+        Nintendo firmware expects that counter to advance, and ignores a
+        subcommand that repeats the previous value.
+        """
+        payload, mask_index, counter_index = entry
+        out = bytearray(payload)
+        out[mask_index] = LIGHTS_ON if on else LIGHTS_OFF
+        if counter_index is not None:
+            out[counter_index] = session.report_counter & 0x0F
+            session.report_counter += 1
+        return bytes(out)
+
+    def set_lights(self, address: str, on: bool):
+        """Toggle a controller's lights. Returns (sent, saved).
+
+        Nothing is written until the request is known to be answerable, so a
+        device with no lights never leaves a stale option behind.
+        """
+        address = normalize_addr(address)
+        session = self.sessions.get(address)
+        if session is None:
+            raise ValueError("device is not connected")
+        if config.get_device_options(address).get('report'):
+            raise ValueError("device has a configured report=, edit that instead")
+
+        entry = self._light_entry(session)
+        if entry is None:
+            raise ValueError("device has no controllable lights")
+
+        saved = config.set_device_option(address, 'lights', 'on' if on else 'off')
+        if not saved:
+            log.warning(f"No devices.conf line for {address}, lights not remembered")
+
+        session.lights_on = on
+        sent = self.send_output_report(session, self._build_light_report(session, entry, on))
+        return sent, saved
+
+    def send_init_output_report(self, session: DeviceSession):
+        """Settle the device's lights once it is connected, and on reconnect.
+
+        A raw 'report=' wins over the built-in table, and its bytes mean
+        whatever the user meant, so the toggle stays out of its way.
+        """
+        options = config.get_device_options(session.address)
+        raw = options.get('report')
+        entry = None
+
+        if raw:
+            try:
+                payload = bytes.fromhex(raw.replace(':', ''))
+            except ValueError:
+                log.warning(f"Bad hex in report= for {session.address}")
+                return
+        else:
+            entry = self._light_entry(session)
+            if entry is None:
+                return
+            payload = self._build_light_report(session, entry,
+                                               options.get('lights') != 'off')
+
+        if not payload:
+            return
+        try:
+            if not self.send_output_report(session, payload):
+                log.info(f"Device takes no report {payload[0]}, init skipped")
+                return
+        except Exception as e:
+            log.warning(f"Init report failed: {e}")
+            return
+
+        log.info(f"Sent init report {payload.hex()}")
+        # Only offer the toggle once the report has actually gone out. A name
+        # can match the table while the device has no such report, and a
+        # control that does nothing is worse than no control.
+        if entry:
+            session.lights_on = payload[entry[1]] != LIGHTS_OFF
 
     def _parse_devices(self):
         """Parse devices from config and group by protocol."""
@@ -276,6 +403,13 @@ class HIDHost(ClassicMixin, BLEMixin):
                 self.ble_devices.append(dev)
 
         log.info(f"Devices: {len(self.classic_devices)} Classic, {len(self.ble_devices)} BLE")
+
+        configured = {normalize_addr(d.address)
+                      for d in self.classic_devices + self.ble_devices}
+        for address in list(self._uhid_nodes):
+            if normalize_addr(address) not in configured and address not in self.sessions:
+                log.info(f"Removing UHID node for unconfigured {address}")
+                self._destroy_uhid_node(address)
 
     async def start(self, pairing: bool = False):
         """Initialize the Bumble device with both protocols."""
@@ -436,6 +570,8 @@ class HIDHost(ClassicMixin, BLEMixin):
         if self.classic_devices or self.ble_devices:
             tasks.append(asyncio.create_task(
                 self._session_watchdog(), name="session_watchdog"))
+            tasks.append(asyncio.create_task(
+                self._link_probe(), name="link_probe"))
 
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -476,6 +612,60 @@ class HIDHost(ClassicMixin, BLEMixin):
                 log.warning("Connection timeout - no device connected")
                 raise InvalidStateError("No device connected within timeout")
 
+    async def _link_probe(self):
+        """Drop sessions whose link died without a disconnection event.
+
+        Every teardown path hangs off that event, so a session that never
+        gets one is served forever: the API keeps reporting it connected and
+        the handlers never re-initiate. On MTK the controller stays quiet
+        across a suspend we did not bracket, which is any suspend whose
+        powerd event we missed (#180). Asking the controller about the
+        handle is the only answer that does not depend on being told.
+        """
+        while True:
+            await asyncio.sleep(self.LINK_PROBE_INTERVAL)
+            for session in list(self.sessions.values()):
+                if session.closed or not session.is_alive():
+                    continue
+                if await self._handle_is_live(session.connection.handle):
+                    continue
+                proto = session.protocol.value.upper()
+                log.warning(f"[{proto}] Link is gone for "
+                            f"{self._format_device(session.address)}, "
+                            f"dropping the session")
+                self._synthesize_disconnection(session.connection.handle)
+
+    async def _handle_is_live(self, handle) -> bool:
+        """Ask the controller whether it still knows this connection handle."""
+        try:
+            await self.device.host.send_command(
+                HCI_Read_RSSI_Command(handle=handle), check_result=True)
+            return True
+        except HCI_Error as e:
+            # An unsupported command or a busy controller says nothing about
+            # the link, so only the unknown handle counts as proof.
+            return e.error_code != HCI_UNKNOWN_CONNECTION_IDENTIFIER_ERROR
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.debug(f"Link probe for handle {handle}: {errstr(e)}")
+            return True
+
+    def _synthesize_disconnection(self, handle):
+        """Hand Bumble the event the controller owed us for this handle.
+
+        Bumble drops the connection and emits it on to the listener that
+        `_register_session` already installed, so the session leaves by the
+        one path every other disconnect uses, rather than through a second
+        teardown entry point that would have to keep up with it.
+        """
+        self.device.host.on_hci_disconnection_complete_event(
+            HCI_Disconnection_Complete_Event(
+                status=HCI_SUCCESS,
+                connection_handle=handle,
+                reason=HCI_CONNECTION_TIMEOUT_ERROR,
+            ))
+
     def _notify_sessions_changed(self):
         if self._sessions_changed:
             self._sessions_changed.set()
@@ -506,8 +696,12 @@ class HIDHost(ClassicMixin, BLEMixin):
 
     def _on_session_disconnection(self, session: DeviceSession, reason):
         proto = session.protocol.value.upper()
+        uptime = time.monotonic() - session.connected_at
+        state = "encrypted" if getattr(session.connection, 'is_encrypted', False) \
+            else "unencrypted"
         log.warning(f"[{proto}] Device disconnected: {session.address} "
-                    f"(reason={reason} {HCI_Constant.error_name(reason)})")
+                    f"(reason={reason} {HCI_Constant.error_name(reason)}) "
+                    f"after {uptime:.1f}s {state}")
 
         if reason == 5 and session.protocol == Protocol.CLASSIC:
             log.info("[Classic] Authentication failure - will clear stale key and retry")
@@ -822,6 +1016,21 @@ class HIDHost(ClassicMixin, BLEMixin):
             return True
         return False
 
+    def _destroy_uhid_node(self, address: str):
+        """Drop the node kept for an address."""
+        node = self._uhid_nodes.pop(address, None)
+        if not node:
+            return
+        if node.fd is not None:
+            try:
+                asyncio.get_event_loop().remove_reader(node.fd)
+            except Exception:
+                pass
+        try:
+            node.destroy()
+        except Exception:
+            pass
+
     def _create_uhid_device(self, session: DeviceSession):
         """Create UHID virtual device."""
 
@@ -847,20 +1056,28 @@ class HIDHost(ClassicMixin, BLEMixin):
         try:
             name = self._configured_name(session.address) or session.name or "HID Device"
             descriptor = sanitize_digitizer(session.report_map)
-            session.uhid_device = UHIDDevice(
-                name=name,
-                report_descriptor=descriptor,
-                bus=Bus.BLUETOOTH,
-                vendor=0,
-                product=0,
-                uniq=session.address,
-            )
-            log.success(f"UHID device created: {name}")
+            node = self._uhid_nodes.get(session.address)
+            if node and (node.report_descriptor != descriptor or node.name != name):
+                log.info(f"UHID device changed, rebuilding: {name}")
+                self._destroy_uhid_node(session.address)
+                node = None
             session.uhid_loop = asyncio.get_event_loop()
-            session.uhid_loop.add_reader(
-                session.uhid_device.fd, self._on_uhid_output, session)
-            session.uhid_loop.call_later(
-                0.5, session.uhid_device.discover_input_paths)
+            if node:
+                log.success(f"UHID device reused: {name}")
+            else:
+                node = UHIDDevice(
+                    name=name,
+                    report_descriptor=descriptor,
+                    bus=Bus.BLUETOOTH,
+                    vendor=0,
+                    product=0,
+                    uniq=session.address,
+                )
+                self._uhid_nodes[session.address] = node
+                log.success(f"UHID device created: {name}")
+                session.uhid_loop.call_later(0.5, node.discover_input_paths)
+            session.uhid_device = node
+            session.uhid_loop.add_reader(node.fd, self._on_uhid_output, session)
             session.is_pointer = descriptor_is_pointer(descriptor)
             if session.is_pointer:
                 log.info("Pointer device: cursor overlay on")
@@ -932,6 +1149,8 @@ class HIDHost(ClassicMixin, BLEMixin):
                 await session.cleanup()
             except Exception:
                 pass
+        for address in list(self._uhid_nodes):
+            self._destroy_uhid_node(address)
         if had_pointer:
             self._notify_pointer(False)
 

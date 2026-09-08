@@ -40,7 +40,7 @@ Open a mapping's row to change the action or remove it.
 
 This is a frontend for [kindle-button-mapper](https://github.com/zampierilucas/kindle-button-mapper-rs), which ships with the release and is what reads the device and runs the action. Mappings live in its `/mnt/us/kindle-button-mapper/config.ini`, so a binding made here is the one the Mapper Manager app shows.
 
-KOReader actions ride on KOReader's HTTP Inspector, so it needs to be enabled with auto-start on. The `auto` and Kindle reader ones don't.
+KOReader actions arrive over a loopback endpoint the plugin itself serves on `127.0.0.1:8323`, so the HTTP Inspector plugin is not needed. The endpoint only runs while the mapper config has something to send at KOReader, to keep KOReader's idle loop asleep otherwise.
 
 ### Keys that KOReader normally ignores
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """BT chip backends: per-Kindle Bluetooth lifecycle, selected by hardware."""
 
+import os
+import signal
 import subprocess
 
 from logging_utils import log
@@ -15,8 +17,34 @@ def run(cmd, **kwargs):
         return False
 
 
+def _holders_from_proc(device_path):
+    """PIDs holding device_path, read from /proc. Ours is never included."""
+    me = os.getpid()
+    holders = []
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit() or int(entry) == me:
+            continue
+        fd_dir = f'/proc/{entry}/fd'
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                if os.readlink(f'{fd_dir}/{fd}') == device_path:
+                    holders.append(int(entry))
+                    break
+            except OSError:
+                continue
+    return holders
+
+
 def free_device(device_path):
-    """Evict whatever userspace process holds device_path (fuser -k)."""
+    """Evict whatever userspace process holds device_path.
+
+    fuser does it where there is one. Some Kindles ship without it (#225),
+    and there the same answer is in /proc, so read it there instead.
+    """
     try:
         r = subprocess.run(['fuser', '-k', device_path],
                            capture_output=True, timeout=5)
@@ -25,8 +53,17 @@ def free_device(device_path):
             log.info(f"Evicted holders of {device_path}: {holders}")
         return True
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        log.warning(f"fuser unavailable or timed out: {e}")
-        return False
+        log.info(f"fuser unavailable or timed out ({e}); scanning /proc instead")
+
+    holders = _holders_from_proc(device_path)
+    for pid in holders:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError as e:
+            log.warning(f"Could not kill {pid} holding {device_path}: {e}")
+    if holders:
+        log.info(f"Evicted holders of {device_path}: {holders}")
+    return True
 
 
 class BtChip:

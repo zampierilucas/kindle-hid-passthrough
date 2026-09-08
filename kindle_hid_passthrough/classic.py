@@ -32,6 +32,12 @@ CLASSIC_AUTH_TIMEOUT = 15.0
 # HIDP DATA header, OUTPUT report type.
 HIDP_DATA_OUTPUT = 0xA2
 
+# An incoming peer that runs its own security procedure signals it by
+# encrypting the link or opening the HID channels, both well inside 1 s on
+# the peers measured so far.
+CLASSIC_PEER_WINDOW = 1.0
+CLASSIC_PEER_CHANNEL_WAIT = 5.0
+
 FALLBACK_HID_DESCRIPTOR = bytes([
     0x05, 0x01, 0x09, 0x05, 0xa1, 0x01, 0x85, 0x01,
     0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x32, 0x09, 0x35,
@@ -384,6 +390,8 @@ class ClassicMixin:
             await self._query_classic_sdp(session)
 
         self._finalize_classic_hid(session)
+        if not connection.is_encrypted:
+            log.warning("[Classic] Link is not encrypted, the peer may drop it")
         log.success(f"[Classic] {self._format_device(session.address)} receiving HID reports")
 
     def _is_classic_allowed(self, addr_str: str) -> bool:
@@ -490,6 +498,7 @@ class ClassicMixin:
             session.report_map = FALLBACK_HID_DESCRIPTOR
             log.warning("[Classic] Using fallback descriptor")
         self._create_uhid_device(session)
+        self.send_init_output_report(session)
 
     def _parse_hid_descriptor_list(self, session, data_element):
         """Parse HID Descriptor List from SDP."""

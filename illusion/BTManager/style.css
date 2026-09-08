@@ -414,6 +414,10 @@ html {
     float: right;
 }
 
+#detailLightsRow .detail-label {
+    line-height: 43px;
+}
+
 .detail-mono {
     font-family: monospace;
     font-size: 34px;
@@ -711,6 +715,7 @@ html {
     .btn-pair { min-width: 78px; min-height: 40px; padding: 7px 13px; font-size: 19px; }
     .btn { min-height: 42px; padding: 9px 16px; font-size: 21px; margin-bottom: 7px; }
     .detail-label, .detail-value { font-size: 22px; }
+    #detailLightsRow .detail-label { line-height: 34px; }
     .detail-mono { font-size: 19px; }
     .off-message { font-size: 24px; padding-top: 44px; }
     .off-hint { font-size: 19px; }

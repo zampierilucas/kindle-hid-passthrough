@@ -45,22 +45,24 @@ As this project replaces the original Bluetooth stack, you can't use the default
 - [Hotfix](https://github.com/KindleModding/Hotfix/releases/tag/v2.3.7) (only for BTManager) — it's what gives the Kindle scriptlet support, and without it the BTManager entry never shows up on the home screen. Kindles jailbroken with older methods don't have scriptlets at all.
 
 > [!IMPORTANT]
-> **Setting up [usbnetlite](https://github.com/notmarek/kindle-usbnetlite) first is highly encouraged.** This project touches Bluetooth, udev and upstart, all of which run early enough in boot that a bad state can leave a Kindle stuck on a white screen. Modern Kindles have no serial pads, so USB networking is the only way back in.
+> **Setting up [usbnetlite](https://github.com/notmarek/kindle-usbnetlite#installation-instructions) first is highly encouraged.** This project touches Bluetooth, udev and upstart, all of which run early enough in boot that a bad state can leave a Kindle stuck on a white screen. Modern Kindles have no serial pads, so USB networking is the only way back in.
 
 Kernels without UHID support are handled automatically: the daemon loads a bundled `uhid.ko` at startup (see [Kernel Modules](#kernel-modules)).
 
 ## Installation
 
+<!--
 ### Video guide
 
 Community walkthrough by [@jencaps89](https://www.tiktok.com/@jencaps89) showing the whole setup as a Bluetooth page turner, [watch it on TikTok](https://www.tiktok.com/@jencaps89/video/7658167614736223496) or through the [embedded player](https://www.tiktok.com/player/v1/7658167614736223496) if you'd rather not log in.
+-->
 
 ### KPM (recommended)
 
-If you have [KPM](https://kindlemodding.org/kindle-dev/kpm/) installed, add this repository once and install:
+If you have [KPM](https://kindlemodding.org/kindle-dev/kpm/) installed ([how to get it](https://kindlemodding.org/jailbreaking/whats-next/installing-homebrew.html#kpm)), add this repository once and install:
 
 ```bash
-kpm add-repo https://raw.githubusercontent.com/zampierilucas/kindle-hid-passthrough/main/kpm/repo.json
+kpm add-repo lzampier.com/hid
 kpm install kindle-hid-passthrough
 ```
 
@@ -72,7 +74,7 @@ kpm install kindle-hid-passthrough
 
 ### Manual install
 
-1. Download the latest release from [GitHub Releases](https://github.com/zampierilucas/kindle-hid-passthrough/releases) and unpack it somewhere other than the install directory:
+1. Download the latest release from [GitHub Releases](https://github.com/zampierilucas/kindle-hid-passthrough/releases) ([direct download](https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough-armv7.tar.xz)) and unpack it somewhere other than the install directory:
    ```bash
    curl -L -o kindle-hid-passthrough-armv7.tar.xz https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/kindle-hid-passthrough-armv7.tar.xz
    mkdir -p /mnt/us/khp-release
@@ -119,7 +121,7 @@ The **Start on boot** toggle at the bottom installs or removes the upstart job. 
 
 If you use KOReader, a bundled plugin gives you the same scan / pair / connect / disconnect / logs / cache controls from inside KOReader — no need to exit. Open via **cog icon (Settings) → Network → BT Manager - HID Passthrough**.
 
-It also maps keys. Press a button, a D-pad direction or a trigger and bind it to any KOReader action, or to one that keeps working with KOReader closed. Mappings run through the bundled Button Mapper, and the KOReader actions need KOReader's HTTP Inspector on.
+It also maps keys. Press a button, a D-pad direction or a trigger and bind it to any KOReader action, or to one that keeps working with KOReader closed. Mappings run through the bundled Button Mapper, which delivers KOReader actions straight to the plugin — no HTTP Inspector needed.
 
 <p align="center">
   <img src="koreader-plugin/screenshots/menu.png" width="48%" alt="Plugin menu">
@@ -161,10 +163,14 @@ tail -f /var/log/hid_passthrough.log
 Paired devices are stored in `devices.conf`:
 
 ```bash
-# Format: ADDRESS PROTOCOL [NAME]
+# Format: ADDRESS PROTOCOL [NAME] [OPTIONS]
 98:B9:EA:01:67:68/P classic Xbox Wireless Controller
 5C:2B:3E:50:4F:04/P ble BLE-M3
+E8:1A:5C:03:22:9F/P classic Joy-Con (R) lights=off
+AA:BB:CC:DD:EE:FF/P classic My Gamepad report=010000014040000140403001
 ```
+
+**Device options**: `lights=on|off` turns the indicator lights on a Joy-Con or Pro Controller on or off, the same setting as the Lights switch on the device page in BTManager. Those two are the only controllers it applies to, since every other family settles its lights on its own or has none a Bluetooth host can reach. `report=<hex>` sends a raw output report when the device connects and on every reconnect, for anything else that needs one; it replaces the built-in report, so `lights=` is ignored on a line that sets it.
 
 **Multi-device support**: Every configured device connects and stays connected at the same time, across both protocols. Sessions are tracked per address, so a keyboard over Classic and a mouse over BLE (or several of each) work together.
 
@@ -192,7 +198,7 @@ The Kindle's kernel Bluetooth stack has bugs that prevent proper HID pairing. By
 
 ### Kernel Modules
 
-8th-10th gen Kindle kernels ship without `CONFIG_UHID`. For these, prebuilt `uhid.ko` modules matching each firmware (kernel release + build number + board codename) are bundled in [`kindle_hid_passthrough/modules/`](kindle_hid_passthrough/modules/) and loaded automatically when `/dev/uhid` is missing. If no module matches your firmware, open an issue with the contents of `/etc/version.txt`.
+8th-10th gen Kindle kernels ship without `CONFIG_UHID`. For these, prebuilt `uhid.ko` modules matching each firmware (kernel release + build number + board codename) are bundled in [`kindle_hid_passthrough/modules/`](kindle_hid_passthrough/modules/) and loaded automatically when `/dev/uhid` does not open. On an installed release they live in `/mnt/us/kindle_hid_passthrough/dist/kindle_hid_passthrough/modules/`, which is the path to use for a manual `insmod`. If no module matches your firmware, open an issue with the contents of `/etc/version.txt`.
 
 The build recipe for the bundled `uhid.ko` modules is in [`docs/uhid-research.md`](docs/uhid-research.md).
 
