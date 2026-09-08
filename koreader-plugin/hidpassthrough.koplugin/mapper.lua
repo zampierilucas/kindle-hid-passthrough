@@ -114,6 +114,18 @@ function M.actions()
 end
 
 -- Evdev node path for a registered device, nil when it isn't connected.
+-- The reverse of findNode: which device a node belongs to. Used to decide
+-- whether KOReader should keep its hands off that node.
+function M.uniqForNode(path)
+    local data = requestJson("GET", "/devices")
+    if not data then return nil end
+    for _, dev in ipairs(data.devices or {}) do
+        if dev.path == path and dev.uniq and dev.uniq ~= "" then
+            return dev.uniq
+        end
+    end
+end
+
 function M.findNode(uniq)
     local data = requestJson("GET", "/devices")
     if not data then return nil end

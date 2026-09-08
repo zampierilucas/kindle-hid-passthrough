@@ -209,10 +209,37 @@ local function checkKeyDevice(path)
     return info
 end
 
+-- Only one process can hold an evdev grab. On a reconnect the mapper lets go
+-- to re-read its config and takes the node back a moment later; if KOReader
+-- attaches in that window the mapper comes back with EBUSY, drops to shared
+-- mode, and shared mode does not relay -- the mapped key silently stops
+-- firing. The mapper's config is the authority on who owns the node.
+function HIDPassthrough:_mapperGrabs(path)
+    local mapper = self:_mapper()
+    if not mapper.installed() then return false end
+    local uniq = mapper.uniqForNode(path)
+    if not uniq or uniq == "" then return false end
+    local text = mapper.getConfig()
+    if not text then return false end
+    local want = mapper.bareAddr(uniq)
+    for dummy, dev in ipairs(mapper.deviceBlocks(text)) do -- luacheck: ignore dummy
+        if dev.uniq and mapper.bareAddr(dev.uniq) == want then
+            return mapper.sectionValue(text, "device." .. dev.id, "grab") == "true"
+        end
+    end
+    return false
+end
+
 function HIDPassthrough:_attachInput(path, force)
     if input_fds[path] and not force then return end
     if Device.input.opened_devices[path] and not input_fds[path] then
         logger.dbg("HIDPassthrough: leaving", path, "to KOReader")
+        return
+    end
+
+    if self:_mapperGrabs(path) then
+        if input_fds[path] then releaseNode(path) end
+        logger.info("HIDPassthrough: leaving", path, "to Button Mapper, it grabs this device")
         return
     end
 
@@ -449,9 +476,6 @@ local MAPPER_MODES = {
         title = _("Button Mapper, keys still type"),
         note = _("Mapped buttons run their action, everything else is passed through untouched."),
         grab = "true", passthrough = "true",
-        -- Identical to Automatic once the device is audio; hidden there so
-        -- the picker does not offer the same thing twice.
-        same_as_automatic_for_audio = true,
     },
     {
         title = _("Button Mapper, exclusive"),
@@ -459,6 +483,27 @@ local MAPPER_MODES = {
         grab = "true", passthrough = "false",
     },
 }
+
+local DEVICES_CONF = "/mnt/us/kindle_hid_passthrough/devices.conf"
+
+-- The mapper's device list is keyed by config block and carries no protocol,
+-- so the menu built from it cannot say whether a device is audio. devices.conf
+-- can: one line per device, "ADDRESS protocol Name".
+local function protoForUniq(uniq)
+    if not uniq or uniq == "" then return nil end
+    local f = io.open(DEVICES_CONF, "r")
+    if not f then return nil end
+    local want = uniq:gsub("/.*$", ""):upper()
+    local found
+    for line in f:lines() do
+        if not line:match("^%s*#") then
+            local addr, proto = line:match("^%s*(%S+)%s+(%S+)")
+            if addr and addr:upper() == want then found = proto break end
+        end
+    end
+    f:close()
+    return found
+end
 
 -- Which pair of values a mode means for this device. Only audio differs,
 -- and only for Automatic; every other mode is explicit and device-agnostic.
@@ -470,6 +515,7 @@ local function modeValues(mode, proto)
 end
 
 function HIDPassthrough:_mapperMode(dev, proto)
+    proto = proto or protoForUniq(dev.uniq)
     local text = self:_mapper().getConfig() or ""
     local section = "device." .. dev.id
     local grab = self:_mapper().sectionValue(text, section, "grab")
@@ -497,6 +543,7 @@ local function releaseNode(path)
 end
 
 function HIDPassthrough:_applyMapperMode(dev, mode, proto)
+    proto = proto or protoForUniq(dev.uniq)
     local want_grab, want_pass = modeValues(mode, proto)
     local node = self:_mapper().findNode(dev.uniq or "")
     -- Hand the node over before the daemon is told to take it, and take it
@@ -518,7 +565,7 @@ function HIDPassthrough:_applyMapperMode(dev, mode, proto)
         return cur
     end)
 
-    if node and ok and mode.grab ~= "true" then
+    if node and ok and want_grab ~= "true" then
         -- The daemon ungrabs on its own reload tick, so give it a moment
         -- before reopening or this grab lands while it still holds one.
         -- Drop whatever KOReader still thinks it has first: handing the node
@@ -1407,18 +1454,16 @@ function HIDPassthrough:_showMapperModePicker(mdev, addr, proto, name, is_connec
     local items = {}
     local current_mode = self:_mapperMode(mdev, proto)
     for dummy, mode in ipairs(MAPPER_MODES) do -- luacheck: ignore dummy
-        if not (proto == "classic_audio" and mode.same_as_automatic_for_audio) then
-            local current = current_mode.title == mode.title
-            table.insert(items, {
-                text = (current and "● " or "○ ") .. mode.title,
-                callback = function()
-                    UIManager:close(self._mode_menu)
-                    self._mode_menu = nil
-                    self:_applyMapperMode(mdev, mode, proto)
-                    self:_showDeviceActions(addr, proto, name, is_connected)
-                end,
-            })
-        end
+        local current = current_mode.title == mode.title
+        table.insert(items, {
+            text = (current and "● " or "○ ") .. mode.title,
+            callback = function()
+                UIManager:close(self._mode_menu)
+                self._mode_menu = nil
+                self:_applyMapperMode(mdev, mode, proto)
+                self:_showDeviceActions(addr, proto, name, is_connected)
+            end,
+        })
     end
 
     local menu
