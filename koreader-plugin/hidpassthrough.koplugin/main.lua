@@ -431,8 +431,14 @@ local MEDIA_ACTIONS = {
 local MAPPER_MODES = {
     {
         title = _("Automatic"),
-        note = _("Gamepads are taken over, keyboards are left to KOReader."),
+        note = _("Gamepads and audio remotes are taken over, keyboards are left to KOReader."),
         grab = nil, passthrough = nil,
+        -- An audio device reaches us through the injected Consumer Control
+        -- descriptor, so its node carries media keys and nothing else, keys
+        -- KOReader has no binding for. Leaving it to KOReader is the one
+        -- automatic answer that cannot work, so for audio this mode means
+        -- the same thing the daemon already writes at registration.
+        audio_grab = "true", audio_passthrough = "true",
     },
     {
         title = _("KOReader only"),
@@ -443,6 +449,9 @@ local MAPPER_MODES = {
         title = _("Button Mapper, keys still type"),
         note = _("Mapped buttons run their action, everything else is passed through untouched."),
         grab = "true", passthrough = "true",
+        -- Identical to Automatic once the device is audio; hidden there so
+        -- the picker does not offer the same thing twice.
+        same_as_automatic_for_audio = true,
     },
     {
         title = _("Button Mapper, exclusive"),
@@ -451,13 +460,23 @@ local MAPPER_MODES = {
     },
 }
 
-function HIDPassthrough:_mapperMode(dev)
+-- Which pair of values a mode means for this device. Only audio differs,
+-- and only for Automatic; every other mode is explicit and device-agnostic.
+local function modeValues(mode, proto)
+    if proto == "classic_audio" and mode.audio_grab then
+        return mode.audio_grab, mode.audio_passthrough
+    end
+    return mode.grab, mode.passthrough
+end
+
+function HIDPassthrough:_mapperMode(dev, proto)
     local text = self:_mapper().getConfig() or ""
     local section = "device." .. dev.id
     local grab = self:_mapper().sectionValue(text, section, "grab")
     local passthrough = self:_mapper().sectionValue(text, section, "passthrough")
     for dummy, mode in ipairs(MAPPER_MODES) do -- luacheck: ignore dummy
-        if mode.grab == grab and (mode.grab ~= "true" or mode.passthrough == passthrough) then
+        local want_grab, want_pass = modeValues(mode, proto)
+        if want_grab == grab and (want_grab ~= "true" or want_pass == passthrough) then
             return mode
         end
     end
@@ -477,19 +496,21 @@ local function releaseNode(path)
     end
 end
 
-function HIDPassthrough:_applyMapperMode(dev, mode)
+function HIDPassthrough:_applyMapperMode(dev, mode, proto)
+    local want_grab, want_pass = modeValues(mode, proto)
     local node = self:_mapper().findNode(dev.uniq or "")
     -- Hand the node over before the daemon is told to take it, and take it
     -- back only after the daemon has been told to let go.
-    if node and mode.grab == "true" then
+    if node and want_grab == "true" then
         releaseNode(node)
     end
 
     local ok = self:mapperEdit(function(cur)
         local section = "device." .. dev.id
+        local values = { grab = want_grab, passthrough = want_pass }
         for dummy, key in ipairs({ "grab", "passthrough" }) do -- luacheck: ignore dummy
-            if mode[key] then
-                cur = self:_mapper().setKey(cur, section, key, mode[key])
+            if values[key] then
+                cur = self:_mapper().setKey(cur, section, key, values[key])
             else
                 cur = self:_mapper().removeKey(cur, section, key)
             end
@@ -1384,17 +1405,20 @@ end
 
 function HIDPassthrough:_showMapperModePicker(mdev, addr, proto, name, is_connected)
     local items = {}
+    local current_mode = self:_mapperMode(mdev, proto)
     for dummy, mode in ipairs(MAPPER_MODES) do -- luacheck: ignore dummy
-        local current = self:_mapperMode(mdev).title == mode.title
-        table.insert(items, {
-            text = (current and "● " or "○ ") .. mode.title,
-            callback = function()
-                UIManager:close(self._mode_menu)
-                self._mode_menu = nil
-                self:_applyMapperMode(mdev, mode)
-                self:_showDeviceActions(addr, proto, name, is_connected)
-            end,
-        })
+        if not (proto == "classic_audio" and mode.same_as_automatic_for_audio) then
+            local current = current_mode.title == mode.title
+            table.insert(items, {
+                text = (current and "● " or "○ ") .. mode.title,
+                callback = function()
+                    UIManager:close(self._mode_menu)
+                    self._mode_menu = nil
+                    self:_applyMapperMode(mdev, mode, proto)
+                    self:_showDeviceActions(addr, proto, name, is_connected)
+                end,
+            })
+        end
     end
 
     local menu
