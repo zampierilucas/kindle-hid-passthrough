@@ -67,23 +67,12 @@ def test_mtk_keeps_radio_up_across_the_screensaver():
     assert chip.calls == [], chip.calls
 
 
-def test_mtk_detaches_for_a_real_suspend_without_powering_off():
+def test_mtk_keeps_radio_up_across_a_real_suspend():
     daemon, chip = drive(
         True, ['goingToScreenSaver', 'readyToSuspend', 'wakeupFromSuspend'])
-    assert daemon.calls == ['suspend', 'resume'], daemon.calls
+    assert daemon.calls == [], daemon.calls
     assert chip.calls == [], chip.calls
     assert not daemon._suspended
-
-
-def test_mtk_resumes_once_when_both_wake_events_arrive():
-    daemon, _ = drive(
-        True, ['readyToSuspend', 'wakeupFromSuspend', 'outOfScreenSaver'])
-    assert daemon.calls == ['suspend', 'resume'], daemon.calls
-
-
-def test_mtk_resumes_when_only_the_screensaver_wake_arrives():
-    daemon, _ = drive(True, ['readyToSuspend', 'outOfScreenSaver'])
-    assert daemon.calls == ['suspend', 'resume'], daemon.calls
 
 
 def main():
