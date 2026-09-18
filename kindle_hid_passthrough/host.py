@@ -33,7 +33,12 @@ from pairing import create_keystore, create_pairing_config
 from transport import create_bumble_device
 from uhid_handler import Bus, UHIDDevice, descriptor_is_pointer, sanitize_digitizer
 
-__all__ = ['HIDHost']
+__all__ = ['HIDHost', 'NoDeviceEverConnected']
+
+
+class NoDeviceEverConnected(InvalidStateError):
+    """Raised when nothing connects in the whole life of one transport."""
+    pass
 
 
 @dataclass
@@ -194,6 +199,8 @@ class HIDHost(ClassicMixin, BLEMixin):
         # Set by the daemon: called with True when the first pointer device
         # gets its UHID device, False when the last goes away (drives the cursor).
         self.on_pointer_change = None
+
+        self.watch_first_session = True
 
         self._sessions_changed = None
         self._radio_lock = None
@@ -495,8 +502,9 @@ class HIDHost(ClassicMixin, BLEMixin):
         log.info(f"Serving devices (Classic: {len(self.classic_devices)}, BLE: {len(self.ble_devices)})")
 
         if self.classic_devices or self.ble_devices:
-            tasks.append(asyncio.create_task(
-                self._session_watchdog(), name="session_watchdog"))
+            if self.watch_first_session:
+                tasks.append(asyncio.create_task(
+                    self._session_watchdog(), name="session_watchdog"))
             tasks.append(asyncio.create_task(
                 self._link_probe(), name="link_probe"))
 
@@ -521,6 +529,9 @@ class HIDHost(ClassicMixin, BLEMixin):
         Once a device has connected, an empty session set is a device that
         went to sleep, not a broken transport: the handlers keep initiating
         on the open radio, so rebuilding would only make us deaf for a while.
+
+        The daemon arms this for one host per radio. A remote that is simply
+        off never connects, and rebuilding for it forever cycles the chip.
         """
         had_session = False
         while True:
@@ -537,7 +548,7 @@ class HIDHost(ClassicMixin, BLEMixin):
                     timeout=self.FIRST_SESSION_TIMEOUT)
             except asyncio.TimeoutError:
                 log.warning("Connection timeout - no device connected")
-                raise InvalidStateError("No device connected within timeout")
+                raise NoDeviceEverConnected("No device connected within timeout")
 
     async def _link_probe(self):
         """Drop sessions whose link died without a disconnection event.
