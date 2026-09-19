@@ -27,3 +27,10 @@ end script
 script
     exec /mnt/us/kindle_hid_passthrough/kindle-hid-passthrough --daemon >>/var/log/hid_passthrough.log 2>&1
 end script
+
+post-stop script
+    # Safety net: the controller already ties the audio LIPC mock to the HID
+    # on/off state, this covers a hard service stop or shutdown.
+    # Bracketed pattern so pkill never matches the shell running this block.
+    pkill -f 'lipc_audio_moc[k].lua' 2>/dev/null || true
+end script

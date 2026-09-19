@@ -214,20 +214,23 @@ class Scanner:
 
             # Check if HID device (Peripheral device class)
             is_hid = False
+            is_audio = False
             major_class_name = "Unknown"
             try:
                 _, major_class, _minor_class = DeviceClass.split_class_of_device(class_of_device)
                 major_class_name = DeviceClass.major_device_class_name(major_class)
                 is_hid = major_class_name == "Peripheral"
+                is_audio = major_class_name == "Audio/Video"
             except Exception:
                 major_class = (class_of_device >> 8) & 0x1F
                 is_hid = (major_class == 0x05)  # Peripheral
+                is_audio = (major_class == 0x04) # Audio/Video
                 major_class_name = f"0x{major_class:02X}"
 
             # Log ALL devices found, not just HID
-            log.info(f"  Classic: {addr_str} CoD=0x{class_of_device:06X} ({major_class_name}) HID={is_hid}")
+            log.info(f"  Classic: {addr_str} CoD=0x{class_of_device:06X} ({major_class_name}) HID={is_hid} AUDIO={is_audio}")
 
-            if is_hid:
+            if is_hid or is_audio:
                 name = 'Unknown'
                 if eir_data:
                     try:
@@ -241,10 +244,11 @@ class Scanner:
                     except Exception:
                         pass
 
+                protocol = Protocol.CLASSIC_AUDIO if is_audio else Protocol.CLASSIC
                 device = DiscoveredDevice(
                     address=addr_str,
                     name=name,
-                    protocol=Protocol.CLASSIC,
+                    protocol=protocol,
                     rssi=rssi or -100
                 )
                 devices_found.append(device)

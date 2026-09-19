@@ -96,6 +96,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._handle_clear_cache()
             case '/autostart':
                 self._handle_autostart(param('enable'))
+            case '/audio':
+                self._handle_audio(param('enable'))
             case '/scan':
                 self._handle_scan()
             case '/scan-status':
@@ -114,6 +116,12 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._handle_discoverable(param('duration'))
             case '/logs':
                 self._handle_logs(param('lines'))
+            case '/media/toggle':
+                self._handle_media_toggle()
+            case '/media/play':
+                self._handle_media_play()
+            case '/media/pause':
+                self._handle_media_pause()
             case _:
                 self._send_json({"ok": False, "error": "Not found"})
 
@@ -150,6 +158,20 @@ class RequestHandler(BaseHTTPRequestHandler):
         else:
             err = (result.stderr or result.stdout or 'failed').strip()
             self._send_json({"ok": False, "enabled": enabled, "error": err[-200:]})
+
+    def _handle_audio(self, enable):
+        """Read or set the audio bypass. Separate from HID on purpose: it
+        replaces the stock audio daemon, so a device it does not work on can
+        run the HID host with its own audio left alone."""
+        controller = self._controller
+        if enable is None:
+            # running is what is actually up, enabled is what was asked for.
+            self._send_json({"ok": True,
+                             "enabled": controller.audio_enabled,
+                             "running": controller.audio_running})
+            return
+        controller.audio_enabled = enable not in ('0', 'false', 'off')
+        self._send_json({"ok": True, "enabled": controller.audio_enabled})
 
     def _handle_start(self):
         controller = self._controller
@@ -216,7 +238,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "No address provided"})
             return
 
-        protocol = Protocol.CLASSIC if protocol_str == 'classic' else Protocol.BLE
+        try:
+            protocol = Protocol(protocol_str or 'ble')
+        except ValueError:
+            protocol = Protocol.CLASSIC if protocol_str == 'classic' else Protocol.BLE
 
         if controller.is_pairing:
             self._send_json({"ok": True, "message": "Pairing already in progress"})
@@ -317,4 +342,31 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "lines": short})
         except OSError as e:
             self._send_json({"ok": False, "error": str(e)})
+
+    def _audio_streamer(self):
+        """The live session's audio streamer, None when nothing is playing.
+
+        host is None while the daemon is suspended, and _audio_session only
+        exists once AVDTP is streaming.
+        """
+        host = self._controller.daemon.host
+        session = getattr(host, '_audio_session', None) if host else None
+        return session[1] if session else None
+
+    def _handle_media(self, action):
+        streamer = self._audio_streamer()
+        if streamer is None:
+            self._send_json({"ok": False, "error": "No active audio session"})
+            return
+        getattr(streamer, action)()
+        self._send_json({"ok": True, "paused": streamer.paused})
+
+    def _handle_media_toggle(self):
+        self._handle_media('toggle_pause')
+
+    def _handle_media_play(self):
+        self._handle_media('play')
+
+    def _handle_media_pause(self):
+        self._handle_media('pause')
 

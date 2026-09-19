@@ -156,6 +156,11 @@ jobs:
             kindle-hid-passthrough \
             assets/hid-passthrough.upstart \
             assets/99-hid-keyboard.rules \
+            assets/audio-hack/start_audio_hack.sh \
+            assets/audio-hack/stop_audio_hack.sh \
+            assets/audio-hack/gst-launch-wrapper.sh \
+            assets/audio-hack/lipc_audio_mock.lua \
+            assets/audio-hack/media.sh \
             scripts/dev_is_keyboard.sh \
             illusion/BTManager.sh \
             koreader-plugin/hidpassthrough.koplugin/main.lua \
@@ -163,6 +168,7 @@ jobs:
             koreader-plugin/hidpassthrough.koplugin/event_map_extra.lua \
             config.ini \
             dist/main.bin \
+            dist/libsbc.so.1 \
             button-mapper/kindle-button-mapper \
             button-mapper/install.sh \
             button-mapper/config.ini; do
