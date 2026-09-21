@@ -7,6 +7,7 @@ import time
 from bumble.core import AdvertisingData, BT_LE_TRANSPORT, InvalidStateError
 from bumble.device import Device, Peer
 from bumble.gatt import (
+    Characteristic,
     GATT_BATTERY_LEVEL_CHARACTERISTIC,
     GATT_BATTERY_SERVICE,
     GATT_DEVICE_NAME_CHARACTERISTIC,
@@ -189,6 +190,54 @@ class BLEMixin:
         if value[0] != session.battery_level:
             session.battery_level = value[0]
             log.info(f"[BLE] {self._format_device(session.address)} battery: {value[0]}%")
+
+    async def _subscribe_vendor_services(self, session):
+        """Subscribe to all non-HID notifiable characteristics.
+
+        DIAGNOSTIC ONLY (experimental.vendor_subscribe): some cheap remotes
+        (e.g. BLE-M9 with vendor service FAB0) blurt vendor notifications the
+        moment the link encrypts, and may treat an un-subscribed vendor
+        channel as 'no host listening'. This subscribes everywhere we can
+        and logs the full vendor GATT layout. Best-effort throughout: a
+        failure here must never break the HID session.
+        """
+        from bumble.gatt import (
+            GATT_GENERIC_ACCESS_SERVICE,
+            GATT_GENERIC_ATTRIBUTE_SERVICE,
+            GATT_HUMAN_INTERFACE_DEVICE_SERVICE,
+        )
+        skip = {
+            GATT_GENERIC_ACCESS_SERVICE,
+            GATT_GENERIC_ATTRIBUTE_SERVICE,
+            GATT_HUMAN_INTERFACE_DEVICE_SERVICE,
+        }
+        peer = session.peer
+        for service in peer.services:
+            if service.uuid in skip:
+                continue
+            try:
+                await peer.discover_characteristics(service=service)
+            except Exception as e:
+                log.warning(f"[BLE] Vendor service {service.uuid} discover failed: {e}")
+                continue
+            for char in service.characteristics:
+                props = char.properties
+                log.info(f"[BLE] Vendor char {service.uuid} / {char.uuid} "
+                         f"props=0x{int(props):02x}")
+                try:
+                    if props & (Characteristic.Properties.NOTIFY
+                                | Characteristic.Properties.INDICATE):
+                        await peer.subscribe(
+                            char,
+                            lambda value, uuid=char.uuid: log.debug(
+                                f"[BLE] Vendor notify {uuid}: {bytes(value).hex()}"),
+                        )
+                        log.success(f"[BLE] Subscribed to vendor char {char.uuid}")
+                    if props & Characteristic.Properties.READ:
+                        value = await peer.read_value(char)
+                        log.info(f"[BLE] Vendor read {char.uuid}: {bytes(value).hex()}")
+                except Exception as e:
+                    log.warning(f"[BLE] Vendor char {char.uuid} skipped: {e}")
 
     async def _run_ble_battery_poller(self):
         """Refresh the battery of devices that answer reads but never notify."""
@@ -452,6 +501,11 @@ class BLEMixin:
         await self._subscribe_to_ble_reports(session)
         await self._ble_activate_hid_service(session)
         self.send_init_output_report(session)
+        if config.vendor_subscribe:
+            try:
+                await self._subscribe_vendor_services(session)
+            except Exception as e:
+                log.warning(f"[BLE] Vendor subscribe failed: {e}")
         self._track_task(asyncio.create_task(self._read_ble_battery(session)))
 
     async def _read_ble_device_name(self, session):

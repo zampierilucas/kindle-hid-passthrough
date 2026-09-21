@@ -175,6 +175,8 @@ class Config:
 
         self.media_remote_enabled = self._getboolean('media_remote', 'enabled', True)
 
+        self.vendor_subscribe = self._getboolean('experimental', 'vendor_subscribe', False)
+
     def _detect_transport(self) -> str:
         """Auto-detect HCI transport from Kindle hardware.
 
