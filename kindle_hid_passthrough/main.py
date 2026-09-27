@@ -12,11 +12,15 @@ Usage:
     main.py --daemon           # Run as daemon with auto-reconnect + API server
     main.py --address XX:XX:XX:XX:XX:XX  # Connect to specific address
 """
+# ruff: noqa: E402
+
+import sys
+
+sys.modules.update(dict.fromkeys(('ssl', '_ssl', '_hashlib')))
 
 import argparse
 import asyncio
 import os
-import sys
 import threading
 
 # Add current directory to path for imports

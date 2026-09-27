@@ -26,8 +26,7 @@ import json
 import os
 import socket
 import subprocess
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from socketserver import ThreadingMixIn
+import threading
 from urllib.parse import parse_qs, urlparse
 
 from config import Protocol, config, get_version, normalize_addr
@@ -38,36 +37,61 @@ PORT = 8321
 UPSTART_CONF = '/etc/upstart/hid-passthrough.conf'
 
 
-class APIServer(ThreadingMixIn, HTTPServer):
-    """Threaded HTTP server that skips FQDN lookup (fails on Kindle without idna codec)."""
-    allow_reuse_address = True
-    daemon_threads = True
+class APIServer:
+    """Threaded HTTP/1.0 server, GET only."""
     controller = None  # Set by daemon.main()
 
-    def server_bind(self):
+    def __init__(self, address, handler_class):
+        self.handler_class = handler_class
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.bind(self.server_address)
-        host, port = self.server_address[:2]
-        self.server_name = host or 'localhost'
-        self.server_port = port
+        self.socket.bind(address)
+        self.socket.listen(8)
+
+    def serve_forever(self):
+        while True:
+            conn, _ = self.socket.accept()
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _handle(self, conn):
+        try:
+            conn.settimeout(10)
+            head = b''
+            while b'\r\n\r\n' not in head and b'\n\n' not in head and len(head) < 8192:
+                chunk = conn.recv(1024)
+                if not chunk:
+                    break
+                head += chunk
+            parts = head.split(b'\n', 1)[0].split()
+            if len(parts) < 2:
+                return
+            if parts[0] != b'GET':
+                conn.sendall(b'HTTP/1.0 405 Method Not Allowed\r\nContent-Length: 0\r\n'
+                             b'Connection: close\r\n\r\n')
+                return
+            self.handler_class(conn, parts[1].decode('latin-1'), self).do_GET()
+        except OSError:
+            pass
+        finally:
+            conn.close()
 
 
-class RequestHandler(BaseHTTPRequestHandler):
+class RequestHandler:
     """HTTP request handler for BTManager API."""
 
-    def log_message(self, _format, *args):
-        """Suppress default stderr logging."""
-        pass
+    def __init__(self, conn, path, server):
+        self.conn = conn
+        self.path = path
+        self.server = server
 
     def _send_json(self, data):
         body = json.dumps(data).encode('utf-8')
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Connection', 'close')
-        self.end_headers()
-        self.wfile.write(body)
+        self.conn.sendall(
+            b'HTTP/1.0 200 OK\r\n'
+            b'Content-Type: application/json\r\n'
+            b'Content-Length: ' + str(len(body)).encode() + b'\r\n'
+            b'Access-Control-Allow-Origin: *\r\n'
+            b'Connection: close\r\n\r\n' + body)
 
     def do_GET(self):
         parsed = urlparse(self.path)
