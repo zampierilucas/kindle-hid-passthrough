@@ -78,6 +78,8 @@ class BtChip:
     # True -> HCI runs over a real UART that can drop bytes (issue #120)
     uart_hci = False
 
+    fault_settle_time = 0.0
+
     def __init__(self, kindle):
         self.kindle = kindle
 
