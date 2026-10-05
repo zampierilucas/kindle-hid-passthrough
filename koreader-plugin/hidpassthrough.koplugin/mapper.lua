@@ -95,6 +95,13 @@ function M.ensureHelper()
     return false, "helper did not come up"
 end
 
+function M.setRunning(on)
+    if M.installed() then
+        os.execute(string.format("/sbin/initctl %s kindle-button-mapper >/dev/null 2>&1",
+            on and "start" or "stop"))
+    end
+end
+
 function M.getConfig()
     return request("GET", "/config")
 end

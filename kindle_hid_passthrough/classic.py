@@ -2,6 +2,7 @@
 """Classic Bluetooth HID handler mixin for HIDHost."""
 
 import asyncio
+import struct
 
 from bumble.core import BT_BR_EDR_TRANSPORT, BT_HUMAN_INTERFACE_DEVICE_SERVICE, InvalidStateError
 from bumble.core import TimeoutError as BumbleTimeoutError
@@ -40,6 +41,37 @@ FALLBACK_HID_DESCRIPTOR = bytes([
 ])
 
 
+_ACL_L2CAP_HEADER = struct.Struct('<BHHHH')
+_ACL_PB_FIRST = (0b00, 0b10)
+
+
+def _install_interrupt_fast_path(host):
+    """Hand single-fragment PDUs for routed HID interrupt channels straight to their sink."""
+    routes = getattr(host, 'hid_fast_routes', None)
+    if routes is not None:
+        return routes
+    routes = host.hid_fast_routes = {}
+    slow = host.on_packet
+    connections = host.connections
+    unpack = _ACL_L2CAP_HEADER.unpack_from
+
+    def on_packet(packet):
+        if packet[0] == 0x02 and routes and len(packet) >= 9:
+            _, handle_flags, acl_length, l2cap_length, cid = unpack(packet)
+            handle = handle_flags & 0x0FFF
+            channel = routes.get((handle, cid))
+            if channel is not None and (handle_flags >> 12) & 0x3 in _ACL_PB_FIRST \
+                    and l2cap_length + 4 == acl_length == len(packet) - 5:
+                connection = connections.get(handle)
+                if connection is not None and connection.assembler.current_data is None:
+                    channel.sink(packet[9:])
+                    return
+        slow(packet)
+
+    host.on_packet = on_packet
+    return routes
+
+
 async def _wait_until(check, timeout, interval=0.05):
     """Poll check() until it is true or the timeout expires."""
     loop = asyncio.get_running_loop()
@@ -69,7 +101,17 @@ class ClassicHIDChannels:
         else:
             channel.sink = self._on_intr_pdu
             self.intr_channel = channel
+            self._route_interrupt(channel)
         channel.on(channel.EVENT_CLOSE, lambda: self._on_channel_close(channel))
+
+    def _route_interrupt(self, channel):
+        routes = _install_interrupt_fast_path(self.connection.device.host)
+        routes[(self.connection.handle, channel.source_cid)] = channel
+
+    def _unroute_interrupt(self, channel):
+        routes = getattr(self.connection.device.host, 'hid_fast_routes', None)
+        if routes is not None:
+            routes.pop((self.connection.handle, channel.source_cid), None)
 
     async def connect_control_channel(self):
         channel = await self.connection.create_l2cap_channel(
@@ -84,12 +126,15 @@ class ClassicHIDChannels:
         channel.sink = self._on_intr_pdu
         channel.on(channel.EVENT_CLOSE, lambda: self._on_channel_close(channel))
         self.intr_channel = channel
+        self._route_interrupt(channel)
 
     def _on_channel_close(self, channel):
         if channel is self.ctrl_channel:
             self.ctrl_channel = None
         elif channel is self.intr_channel:
             self.intr_channel = None
+        if channel.psm == HID_INTERRUPT_PSM:
+            self._unroute_interrupt(channel)
 
     def set_report_protocol(self):
         """Send HIDP SET_PROTOCOL(Report) on the control channel."""
@@ -109,6 +154,8 @@ class ClassicHIDChannels:
             if channel is None:
                 continue
             setattr(self, attr, None)
+            if attr == 'intr_channel':
+                self._unroute_interrupt(channel)
             try:
                 await asyncio.wait_for(channel.disconnect(), timeout=1.0)
             except Exception:

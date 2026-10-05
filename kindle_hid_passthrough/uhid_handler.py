@@ -69,6 +69,22 @@ def sanitize_digitizer(descriptor: bytes) -> bytes:
     return result
 
 
+def descriptor_has_relative_input(descriptor: bytes) -> bool:
+    """True if any Input item is Relative, where a repeated report still means movement."""
+    i = 0
+    while i < len(descriptor):
+        b = descriptor[i]
+        size = b & 0x03
+        if size == 3:
+            size = 4
+        if i + 1 + size > len(descriptor):
+            break
+        if b & 0xFC == 0x80 and size and descriptor[i + 1] & 0x04:
+            return True
+        i += 1 + size
+    return False
+
+
 def descriptor_is_pointer(descriptor: bytes) -> bool:
     """True if the descriptor's first top-level Application collection is a
     Generic Desktop Mouse (0x02) or Pointer (0x01).

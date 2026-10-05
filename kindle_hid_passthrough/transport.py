@@ -14,6 +14,7 @@ except ImportError:
 from bumble.device import Device
 from bumble.hci import HCI_LE_ADD_DEVICE_TO_RESOLVING_LIST_COMMAND, LeFeatureMask
 from bumble.transport import open_transport
+from bumble.transport.common import StreamPacketSink, StreamPacketSource, Transport
 
 from config import config
 from hci_parser import install_resync_parser
@@ -92,10 +93,83 @@ def _release_leaked_fds(device_path: str) -> int:
     return closed
 
 
+class BatchedReads:
+    """Drain the HCI fd on a timer instead of waking the loop for every packet."""
+
+    INTERVAL = 0.1
+
+    def __init__(self, read_transport, fd, protocol):
+        self._read_transport = read_transport
+        self._fd = fd
+        self._protocol = protocol
+        self._timer = None
+
+    def start(self):
+        if self._timer is not None or self._read_transport.is_closing():
+            return
+        self._read_transport.pause_reading()
+        self._timer = asyncio.get_running_loop().call_later(self.INTERVAL, self._tick)
+
+    def stop(self):
+        if self._timer is None:
+            return
+        self._timer.cancel()
+        self._timer = None
+        self._drain()
+        if not self._read_transport.is_closing():
+            self._read_transport.resume_reading()
+
+    def _tick(self):
+        if self._drain():
+            self._timer = asyncio.get_running_loop().call_later(self.INTERVAL, self._tick)
+        else:
+            self._timer = None
+            if not self._read_transport.is_closing():
+                self._read_transport.resume_reading()
+
+    def _drain(self):
+        while True:
+            try:
+                data = os.read(self._fd, 65536)
+            except BlockingIOError:
+                return True
+            except OSError:
+                return False
+            if not data:
+                return False
+            self._protocol.data_received(data)
+
+
+async def _open_file_transport(path: str):
+    """Bumble's file transport, keeping the read pipe so reads can be batched."""
+    file = open(path, 'r+b', buffering=0)
+    loop = asyncio.get_running_loop()
+    read_transport, source = await loop.connect_read_pipe(StreamPacketSource, file)
+    write_transport, _ = await loop.connect_write_pipe(asyncio.BaseProtocol, file)
+    reads = BatchedReads(read_transport, file.fileno(), source)
+
+    class FileTransport(Transport):
+        async def close(self):
+            reads.stop()
+            read_transport.close()
+            write_transport.close()
+            file.close()
+
+    transport = FileTransport(source, StreamPacketSink(write_transport))
+    transport.reads = reads
+    return transport
+
+
+def _open(spec: str):
+    if spec.startswith('file:'):
+        return _open_file_transport(spec[5:])
+    return open_transport(spec)
+
+
 async def _open_transport_with_recovery(spec: str):
     try:
         return await asyncio.wait_for(
-            open_transport(spec), timeout=config.transport_timeout)
+            _open(spec), timeout=config.transport_timeout)
     except OSError as e:
         if e.errno != 16 or not spec.startswith('file:'):
             raise
@@ -105,7 +179,7 @@ async def _open_transport_with_recovery(spec: str):
             raise
         log.warning(f"Released {n} leaked fd(s) for {device_path}, retrying")
         return await asyncio.wait_for(
-            open_transport(spec), timeout=config.transport_timeout)
+            _open(spec), timeout=config.transport_timeout)
 
 
 async def create_bumble_device(transport_spec=None, configure=None):
@@ -177,6 +251,7 @@ async def create_bumble_device(transport_spec=None, configure=None):
         )
 
         await device.power_on()
+        device.irk = (bytes(device.public_address) * 3)[:16]
         log.success(f"Device powered on: {device.public_address}")
     except BaseException:
         try:

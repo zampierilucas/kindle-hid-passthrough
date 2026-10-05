@@ -879,7 +879,7 @@ function HIDPassthrough:_waitForState(target, timeout)
     return false
 end
 
-function HIDPassthrough:start()
+function HIDPassthrough:_startDaemon()
     local state = self:getState()
 
     if state == "on" then
@@ -926,7 +926,7 @@ function HIDPassthrough:start()
         tostring(self.START_TIMEOUT))
 end
 
-function HIDPassthrough:stop()
+function HIDPassthrough:_stopDaemon()
     local state = self:getState()
 
     if state ~= "on" then
@@ -951,6 +951,18 @@ function HIDPassthrough:stop()
         logger.dbg("HIDPassthrough: waiting for stop, tick", i)
     end
     return false, _("Daemon did not stop within timeout.")
+end
+
+function HIDPassthrough:start()
+    local ok, msg = self:_startDaemon()
+    if ok then self:_mapper().setRunning(true) end
+    return ok, msg
+end
+
+function HIDPassthrough:stop()
+    local ok, msg = self:_stopDaemon()
+    if ok then self:_mapper().setRunning(false) end
+    return ok, msg
 end
 
 function HIDPassthrough:toggle()

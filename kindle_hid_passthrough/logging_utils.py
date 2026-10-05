@@ -133,7 +133,8 @@ def setup_daemon_logging(log_file: str):
     root_logger.setLevel(logging.DEBUG if os.environ.get('KINDLE_HID_DEBUG') else logging.INFO)
 
     # Silence verbose Bumble library logs
-    logging.getLogger('bumble').setLevel(logging.WARNING)
+    logging.getLogger('bumble').setLevel(
+        logging.DEBUG if os.environ.get('KINDLE_HID_DEBUG') == 'hci' else logging.WARNING)
 
     # Disable console output for our logger
     log.set_console_output(False)

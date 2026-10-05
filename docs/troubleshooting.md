@@ -22,6 +22,9 @@ tail -f /var/log/hid_passthrough.log
 
 # Verbose logs, including a timestamped line per HID report
 KINDLE_HID_DEBUG=1 /mnt/us/kindle_hid_passthrough/kindle-hid-passthrough --daemon &
+
+# Also log raw HCI, SMP, L2CAP and ATT traffic (very verbose)
+KINDLE_HID_DEBUG=hci /mnt/us/kindle_hid_passthrough/kindle-hid-passthrough --daemon &
 ```
 
 ### Pairing

@@ -1,0 +1,46 @@
+name: Bug report
+description: Something isn't working
+labels: [bug]
+body:
+  - type: input
+    id: kindle
+    attributes:
+      label: Kindle model
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      description: Controller, keyboard or mouse you are pairing, and whether it is Bluetooth Classic or BLE if you know
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste the output of `/mnt/us/kindle_hid_passthrough/kindle-hid-passthrough --diagnostics`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Reproduce the problem, then paste the output of `cat /var/log/hid_passthrough.log`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: mapper-log
+    attributes:
+      label: Button mapper log
+      description: If the problem is with button mapping, also paste `cat /var/log/kindle-button-mapper.log` and `cat /var/log/kindle-button-mapper-waf.log`
+      render: text
