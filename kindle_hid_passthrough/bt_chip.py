@@ -94,6 +94,9 @@ class BtChip:
     def on_transport_close(self):
         """Run after the transport closes, to drop anything held for it."""
 
+    def on_ready(self):
+        """Run once the controller is powered on and bring-up is done."""
+
     def on_hci_reset_timeout(self):
         """Run after HCI Reset times out, before the connect attempt is retried."""
 
