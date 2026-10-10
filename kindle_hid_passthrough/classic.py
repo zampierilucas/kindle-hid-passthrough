@@ -27,6 +27,11 @@ HIDP_DATA_OUTPUT = 0xA2
 CLASSIC_PEER_WINDOW = 1.0
 CLASSIC_PEER_CHANNEL_WAIT = 5.0
 
+# Some peers wait for us to encrypt and then open the HID channels themselves,
+# the 8BitDo Micro within 50 ms. Paging the same PSM in that window collides:
+# neither channel opens and the peer's reports land on a channel with no sink.
+CLASSIC_PEER_OPEN_WINDOW = 0.5
+
 FALLBACK_HID_DESCRIPTOR = bytes([
     0x05, 0x01, 0x09, 0x05, 0xa1, 0x01, 0x85, 0x01,
     0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x32, 0x09, 0x35,
@@ -292,6 +297,15 @@ class ClassicMixin:
                     log.success("[Classic] Bonding restored")
                 except Exception as e:
                     log.warning(f"[Classic] Bonding restore failed: {errstr(e)}")
+
+            if not channels.intr_channel and await _wait_until(
+                    lambda: channels.ctrl_channel or channels.intr_channel,
+                    CLASSIC_PEER_OPEN_WINDOW):
+                log.info("[Classic] Peer is opening the HID channels, standing by")
+                if await _wait_until(lambda: channels.intr_channel, CLASSIC_PEER_CHANNEL_WAIT):
+                    log.success("[Classic] Peer opened the HID channels")
+                else:
+                    log.info("[Classic] Peer did not open the interrupt channel, paging outward")
 
         if not channels.ctrl_channel:
             log.info("[Classic] Connecting to HID control channel...")

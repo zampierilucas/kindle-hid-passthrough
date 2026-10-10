@@ -73,8 +73,10 @@ class Peer:
     """One observed reconnect from the peer's side. Times in ms from connect."""
 
     def __init__(self, name, *, switch_error=None, encrypt_error=None,
-                 opens_at=None, encrypts_at=None, drops_at=None):
+                 opens_at=None, encrypts_at=None, drops_at=None,
+                 opens_after_encrypt=None):
         self.name = name
+        self.opens_after_encrypt = opens_after_encrypt
         self.switch_error = switch_error
         self.encrypt_error = encrypt_error
         self.opens_at = opens_at
@@ -207,6 +209,16 @@ async def replay(peer):
         at(peer.encrypts_at, peer_encrypts)
     if peer.drops_at:
         at(peer.drops_at, peer_drops_link)
+    if peer.opens_after_encrypt:
+        ctrl_ms, intr_ms = peer.opens_after_encrypt
+        encrypt = session.connection.encrypt
+
+        async def encrypt_then_open(enable=True):
+            await encrypt(enable)
+            at(ctrl_ms, lambda: setattr(session.channels, 'ctrl_channel', FakeChannel(0x11)))
+            at(intr_ms, lambda: setattr(session.channels, 'intr_channel', FakeChannel(0x13)))
+
+        session.connection.encrypt = encrypt_then_open
 
     task = asyncio.ensure_future(host._setup_classic_session(session, None))
     session.setup_task = task
@@ -247,10 +259,15 @@ SESSIONS = [
     (Peer('8 no peer procedure at all, the #85 shape'), 'ready'),
     (Peer('9 peer encrypts without opening, constructed',
           switch_error=COLLISION, encrypts_at=300), 'ready'),
+    (Peer('10 peer opens after we encrypt, 8BitDo Micro',
+          opens_after_encrypt=(5, 45)), 'ready'),
+    (Peer('11 peer opens after we encrypt, slow interrupt',
+          opens_after_encrypt=(20, 900)), 'ready'),
 ]
 
 SIGNALLED = {'3', '4', '7', '9'}
 QUIET = {'8'}
+OPENS_AFTER_ENCRYPT = {'10', '11'}
 INITIATED_ON_LINK = ('switch_role', 'authenticate', 'encrypt')
 
 
@@ -280,6 +297,11 @@ async def main():
                                  'page_ctrl', 'page_intr'],
                   f"quiet peer did not get the central path: {r['calls']}")
             check(r['encrypted'], "quiet peer left unencrypted")
+
+        if num in OPENS_AFTER_ENCRYPT:
+            paged = [c for c in r['calls'] if c.startswith('page_')]
+            check(paged == [],
+                  f"paged {paged} into channels the peer was opening")
 
         if peer.drops_at:
             check(r['ms'] < peer.drops_at + 150,
