@@ -204,6 +204,8 @@ The build recipe for the bundled `uhid.ko` modules is in [`docs/uhid-research.md
 
 ## Hardware
 
+See [docs/compatibility.md](docs/compatibility.md) for every Kindle and Bluetooth device reported working or broken.
+
 Tested on:
 
 **MediaTek (11th gen+)**
