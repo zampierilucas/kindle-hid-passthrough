@@ -9,6 +9,7 @@ local M = {
 }
 
 local server
+local owner
 
 local function parseArgs(uri)
     local args, n = {}, 0
@@ -70,8 +71,11 @@ local function onRequest(data, client)
     return Event:new("InputEvent")
 end
 
-function M.start()
-    if server then return true end
+function M.start(who)
+    if server then
+        owner = who
+        return true
+    end
     local SimpleTCPServer = require("ui/message/simpletcpserver")
     server = SimpleTCPServer:new{
         host = M.HOST,
@@ -85,15 +89,18 @@ function M.start()
         return false
     end
     UIManager:insertZMQ(server)
+    owner = who
     logger.dbg("HIDPassthrough: event server on port", M.PORT)
     return true
 end
 
-function M.stop()
+function M.stop(who)
     if not server then return end
+    if who ~= nil and who ~= owner then return end
     UIManager:removeZMQ(server)
     server:stop()
     server = nil
+    owner = nil
 end
 
 return M
