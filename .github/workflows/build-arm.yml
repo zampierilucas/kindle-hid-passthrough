@@ -203,6 +203,7 @@ jobs:
           files: |
             kindle-hid-passthrough-armv7.tar.xz
             kindle-hid-passthrough.kpkg
+            documents/install_hid_passthrough.sh
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -216,6 +217,7 @@ jobs:
           files: |
             kindle-hid-passthrough-armv7.tar.xz
             kindle-hid-passthrough.kpkg
+            documents/install_hid_passthrough.sh
           prerelease: true
           make_latest: "false"
           generate_release_notes: true

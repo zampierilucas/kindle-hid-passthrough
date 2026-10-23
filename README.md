@@ -70,7 +70,15 @@ kpm install kindle-hid-passthrough
 
 ### KindleForge (currently unavailable)
 
-[KindleForge](https://github.com/KindleTweaks/KindleForge) is being reworked, so installing from it is not an option right now. Use KPM or the manual install below.
+[KindleForge](https://github.com/KindleTweaks/KindleForge) is being reworked, so installing from it is not an option right now. Use KPM, the scriptlet, or the manual install below.
+
+### Scriptlet
+
+This scriptlet automatically fetches the latest release, extracts the files, and installs all features.
+
+1. Download the [installation scriptlet](https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/install_hid_passthrough.sh)
+2. Place the scriptlet in the Kindle's `documents/` folder
+3. Click the "Install Kindle HID Passthrough" book that appears in the library
 
 ### Manual install
 
