@@ -1882,8 +1882,8 @@ function HIDPassthrough:_doToggle(touchmenu_instance)
 end
 
 -- Battery level when a device reports one, the BT symbol while a device
--- is connected, the crossed out one while the daemon is up (unless the footer
--- hides inactive items), otherwise nothing.
+-- is connected, the crossed out one while the daemon is up (unless hidden
+-- from the menu), otherwise nothing.
 function HIDPassthrough:_statusText()
     local state, body = self:getState()
     if state ~= "on" then return end
@@ -1892,9 +1892,8 @@ function HIDPassthrough:_statusText()
         return self:_batteryText()
     end
     local footer = self.ui.view and self.ui.view.footer
-    local settings = footer and footer.settings or {}
-    if idle and settings.all_at_once and settings.hide_empty_generators then return end
-    local prefix = settings.item_prefix
+    if idle and G_reader_settings:isTrue("HIDPassthrough_footer_hide_idle") then return end
+    local prefix = footer and footer.settings and footer.settings.item_prefix
     if prefix == "letters" then
         return T(idle and _("%1 idle") or _("%1 on"), "ʙᴛ") -- small caps
     end
@@ -2000,6 +1999,17 @@ function HIDPassthrough:addToMainMenu(menu_items)
                     else
                         self:_removeFooterSymbol()
                     end
+                end,
+            },
+            {
+                text = _("Hide status when no device is connected"),
+                enabled_func = function() return self.show_in_footer end,
+                checked_func = function()
+                    return G_reader_settings:isTrue("HIDPassthrough_footer_hide_idle")
+                end,
+                callback = function()
+                    G_reader_settings:flipNilOrFalse("HIDPassthrough_footer_hide_idle")
+                    self:_updateFooter()
                 end,
             },
             {
