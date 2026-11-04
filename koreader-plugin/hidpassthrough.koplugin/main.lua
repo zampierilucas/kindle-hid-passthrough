@@ -1765,9 +1765,9 @@ function HIDPassthrough:init()
 end
 
 function HIDPassthrough:onCloseWidget()
+    self:_eventServer().stop(self)
     self:_cancelPolls()
     self:_stopBatteryPoll()
-    self:_eventServer().stop(self)
 end
 
 function HIDPassthrough:onResume()
@@ -1866,7 +1866,7 @@ function HIDPassthrough:_stopBatteryPoll()
         UIManager:unschedule(self._battery_poll_cb)
         self._battery_poll_cb = nil
     end
-    self:_setBatteryShown(false)
+    self._battery_shown = false
     self._battery = nil
 end
 
