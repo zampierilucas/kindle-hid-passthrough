@@ -45,7 +45,10 @@ As this project replaces the original Bluetooth stack, you can't use the default
 - [Hotfix](https://github.com/KindleModding/Hotfix/releases/tag/v2.3.7) (only for BTManager) — it's what gives the Kindle scriptlet support, and without it the BTManager entry never shows up on the home screen. Kindles jailbroken with older methods don't have scriptlets at all.
 
 > [!IMPORTANT]
-> **Setting up [usbnetlite](https://github.com/notmarek/kindle-usbnetlite#installation-instructions) first is highly encouraged.** This project touches Bluetooth, udev and upstart, all of which run early enough in boot that a bad state can leave a Kindle stuck on a white screen. Modern Kindles have no serial pads, so USB networking is the only way back in.
+> **Setting up a way back in first is highly encouraged.** This project touches Bluetooth, udev and upstart, all of which run early enough in boot that a bad state can leave a Kindle stuck on a white screen. Modern Kindles have no serial pads, so USB SSH is the only way back in.
+>
+> - **Newer Kindles (firmware 5.16 and up):** [Jobman](https://kindlemodding.org/jailbreaking/whats-next/jailbreaking-manager/) (`;kpm install jobman`), which adds USB SSH and a recovery mode.
+> - **Older Kindles:** [usbnetlite](https://github.com/notmarek/kindle-usbnetlite#installation-instructions), installed through MRPI.
 
 Kernels without UHID support are handled automatically: the daemon loads a bundled `uhid.ko` at startup (see [Kernel Modules](#kernel-modules)).
 
