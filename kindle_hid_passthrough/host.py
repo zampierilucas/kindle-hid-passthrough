@@ -31,7 +31,14 @@ from logging_utils import errstr, log
 from media_remote import MEDIA_REMOTE_COD, MediaRemote
 from pairing import create_keystore, create_pairing_config
 from transport import create_bumble_device
-from uhid_handler import Bus, UHIDDevice, descriptor_has_relative_input, descriptor_is_pointer, sanitize_digitizer
+from uhid_handler import (
+    Bus,
+    UHIDDevice,
+    descriptor_has_relative_input,
+    descriptor_is_pointer,
+    fix_xbox_buttons,
+    sanitize_digitizer,
+)
 
 __all__ = ['HIDHost']
 
@@ -182,6 +189,7 @@ class HIDHost(ClassicMixin, BLEMixin):
         self.sessions = {}
         self._pairing_session = None
         self._classic_psm_registered = False
+        self._closing_connections = set()
 
         self._connection_tasks: set = set()
         self._ble_param_updates: set = set()
@@ -679,7 +687,11 @@ class HIDHost(ClassicMixin, BLEMixin):
             await session.teardown_done.wait()
             return
         was_pointer = session.is_pointer and session.uhid_device is not None
-        await session.cleanup()
+        self._closing_connections.add(session.connection)
+        try:
+            await session.cleanup()
+        finally:
+            self._closing_connections.discard(session.connection)
         if was_pointer and self._pointer_count() == 0:
             self._notify_pointer(False)
 
@@ -833,7 +845,7 @@ class HIDHost(ClassicMixin, BLEMixin):
 
         try:
             name = self._configured_name(session.address) or session.name or "HID Device"
-            descriptor = sanitize_digitizer(session.report_map)
+            descriptor = fix_xbox_buttons(sanitize_digitizer(session.report_map))
             session.uhid_device = UHIDDevice(
                 name=name,
                 report_descriptor=descriptor,

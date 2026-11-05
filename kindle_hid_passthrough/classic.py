@@ -13,6 +13,7 @@ from bumble.hci import (
 )
 from bumble.hid import HID_CONTROL_PSM, HID_INTERRUPT_PSM, Message, SetProtocolMessage
 from bumble.l2cap import ClassicChannelSpec
+from bumble.sdp import SDP_CONTINUATION_WATCHDOG, DataElement, SDP_ServiceSearchAttributeRequest, ServiceAttribute
 from bumble.sdp import Client as SDPClient
 
 from config import Protocol, clean_device_name, config, normalize_addr
@@ -70,6 +71,35 @@ def _install_interrupt_fast_path(host):
 
     host.on_packet = on_packet
     return routes
+
+
+async def _search_attributes(sdp_client, uuids, attribute_ids):
+    """Like Client.search_attributes, but also accepts an attribute list sent without its record sequence."""
+    accumulator = b''
+    continuation_state = bytes([0])
+    for _ in range(SDP_CONTINUATION_WATCHDOG):
+        response = await sdp_client.send_request(SDP_ServiceSearchAttributeRequest(
+            transaction_id=sdp_client.make_transaction_id(),
+            service_search_pattern=DataElement.sequence([DataElement.uuid(uuid) for uuid in uuids]),
+            maximum_attribute_byte_count=0xFFFF,
+            attribute_id_list=DataElement.sequence(
+                [DataElement.unsigned_integer_16(attribute_id) for attribute_id in attribute_ids]),
+            continuation_state=continuation_state,
+        ))
+        accumulator += response.attribute_lists
+        continuation_state = response.continuation_state
+        if continuation_state == bytes([0]):
+            break
+    if not accumulator:
+        return []
+    top = DataElement.from_bytes(accumulator)
+    if top.type != DataElement.SEQUENCE:
+        return []
+    lists = top.value
+    if lists and lists[0].type != DataElement.SEQUENCE:
+        lists = [DataElement.sequence(lists)]
+    return [ServiceAttribute.list_from_data_elements(attributes.value)
+            for attributes in lists if attributes.type == DataElement.SEQUENCE]
 
 
 async def _wait_until(check, timeout, interval=0.05):
@@ -193,6 +223,9 @@ class ClassicMixin:
         def on_open():
             addr = normalize_addr(str(channel.connection.peer_address))
             session = self.sessions.get(addr)
+            if session is None and channel.connection not in self._closing_connections \
+                    and self._is_classic_allowed(addr):
+                session = self._on_classic_connection(channel.connection)
             if session is None or session.channels is None or \
                     session.channels.connection is not channel.connection:
                 log.warning(f"[Classic] Unexpected HID channel from "
@@ -213,44 +246,46 @@ class ClassicMixin:
         self._ensure_classic_psm_servers()
         log.info(f"[Classic] HID Host ready (PSM 0x{HID_CONTROL_PSM:04X}, 0x{HID_INTERRUPT_PSM:04X})")
 
+        self._classic_connection_listener = self._on_classic_connection
+        self.device.on('connection', self._on_classic_connection)
+
         log.info("[Classic] Enabling Page Scan...")
         await self.device.host.send_command(
             HCI_Write_Scan_Enable_Command(scan_enable=0x02),
             check_result=True
         )
 
-        def on_connection_event(connection):
-            is_classic = (hasattr(connection, 'transport')
-                          and connection.transport == BT_BR_EDR_TRANSPORT) \
-                          or not hasattr(connection, 'transport')
-            if not is_classic:
-                return
-
-            addr_str = str(connection.peer_address)
-            if not self._is_classic_allowed(addr_str):
-                if self.media_remote:
-                    self.media_remote.adopt(connection)
-                    return
-                log.warning(f"[Classic] Rejecting {addr_str} (not allowed)")
-                self._track_task(asyncio.create_task(self._reject_connection(connection)))
-                return
-
-            addr = normalize_addr(addr_str)
-            old = self.sessions.get(addr)
-            session = self._new_session(addr, Protocol.CLASSIC, connection)
-            session.channels = ClassicHIDChannels(
-                connection,
-                lambda pdu: self._on_classic_interrupt_data(session, pdu),
-                lambda: self._on_virtual_cable_unplug(session))
-            self._register_session(session)
-            session.setup_task = self._track_task(asyncio.create_task(
-                self._run_session_setup(
-                    session, self._setup_classic_session(session, old))))
-
-        self._classic_connection_listener = on_connection_event
-        self.device.on('connection', on_connection_event)
-
         await self._classic_active_connect_loop()
+
+    def _on_classic_connection(self, connection):
+        """Start an HID session for a new Classic link, returning it."""
+        is_classic = (hasattr(connection, 'transport')
+                      and connection.transport == BT_BR_EDR_TRANSPORT) \
+                      or not hasattr(connection, 'transport')
+        if not is_classic:
+            return None
+
+        addr_str = str(connection.peer_address)
+        if not self._is_classic_allowed(addr_str):
+            if self.media_remote:
+                self.media_remote.adopt(connection)
+                return None
+            log.warning(f"[Classic] Rejecting {addr_str} (not allowed)")
+            self._track_task(asyncio.create_task(self._reject_connection(connection)))
+            return None
+
+        addr = normalize_addr(addr_str)
+        old = self.sessions.get(addr)
+        session = self._new_session(addr, Protocol.CLASSIC, connection)
+        session.channels = ClassicHIDChannels(
+            connection,
+            lambda pdu: self._on_classic_interrupt_data(session, pdu),
+            lambda: self._on_virtual_cable_unplug(session))
+        self._register_session(session)
+        session.setup_task = self._track_task(asyncio.create_task(
+            self._run_session_setup(
+                session, self._setup_classic_session(session, old))))
+        return session
 
     async def _setup_classic_session(self, session, old=None):
         """Authenticate, open HID channels, and finalize one Classic session."""
@@ -388,6 +423,11 @@ class ClassicMixin:
                     msg = str(e)
                     if "CONNECTION_ALREADY_EXISTS" in msg:
                         log.info("[Classic] Peer paged us first; yielding to incoming link")
+                        existing = self.device.find_connection_by_bd_addr(
+                            target, transport=BT_BR_EDR_TRANSPORT)
+                        if existing is not None and existing not in self._closing_connections \
+                                and normalize_addr(addr) not in self.sessions:
+                            self._on_classic_connection(existing)
                         await asyncio.sleep(2.0)
                     elif "DISALLOWED" in msg or "PENDING" in msg:
                         log.warning("[Classic] HCI busy, waiting...")
@@ -564,7 +604,8 @@ class ClassicMixin:
             await asyncio.wait_for(sdp_client.connect(), timeout=5.0)
 
             result = await asyncio.wait_for(
-                sdp_client.search_attributes(
+                _search_attributes(
+                    sdp_client,
                     [BT_HUMAN_INTERFACE_DEVICE_SERVICE],
                     [0x0100, 0x0206]
                 ),

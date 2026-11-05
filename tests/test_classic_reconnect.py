@@ -52,6 +52,8 @@ def _stub_bumble():
 
     sdp = types.ModuleType('bumble.sdp')
     sdp.Client = object
+    sdp.SDP_CONTINUATION_WATCHDOG = 64
+    sdp.DataElement = sdp.SDP_ServiceSearchAttributeRequest = sdp.ServiceAttribute = object
 
     sys.modules.setdefault('bumble', types.ModuleType('bumble'))
     for name, mod in (('bumble.core', core), ('bumble.hci', hci),

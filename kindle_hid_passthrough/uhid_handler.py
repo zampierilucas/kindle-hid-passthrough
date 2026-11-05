@@ -8,7 +8,7 @@ from typing import Optional
 
 from cpu_latency import boost_cpu
 
-__all__ = ['UHIDDevice', 'UHIDError', 'Bus', 'sanitize_digitizer']
+__all__ = ['UHIDDevice', 'UHIDError', 'Bus', 'sanitize_digitizer', 'fix_xbox_buttons']
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,30 @@ def sanitize_digitizer(descriptor: bytes) -> bytes:
     if result != descriptor:
         logger.info(f"Sanitized digitizer ({len(descriptor)} bytes, "
                     f"pressure and contact fields padded)")
+    return result
+
+
+XBOX_BUTTONS = bytes.fromhex('05091901290a150025017501950a8102')
+XBOX_GUIDE = bytes.fromhex('050109808502a1000985')
+
+
+def fix_xbox_buttons(descriptor: bytes) -> bytes:
+    """Give an Xbox layout descriptor the Linux gamepad button codes.
+
+    Xbox Wireless Controllers, and pads that copy their descriptor, number the
+    buttons A, B, X, Y, LB, RB, View, Menu, LS, RS, so hid-generic hands out
+    BTN_A through BTN_TR2 in that order instead of the gamepad.rst layout.
+    Naming the usages explicitly maps X to BTN_WEST, LB to BTN_TL, View to
+    BTN_SELECT and so on, and the guide button (System Main Menu, KEY_MENU)
+    becomes BTN_MODE. The report layout is unchanged.
+    """
+    if XBOX_BUTTONS not in descriptor or XBOX_GUIDE not in descriptor:
+        return descriptor
+    usages = (0x01, 0x02, 0x05, 0x04, 0x07, 0x08, 0x0B, 0x0C, 0x0E, 0x0F)
+    buttons = bytes([0x05, 0x09]) + b''.join(bytes([0x09, u]) for u in usages) + XBOX_BUTTONS[6:]
+    result = descriptor.replace(XBOX_BUTTONS, buttons, 1)
+    result = result.replace(XBOX_GUIDE, XBOX_GUIDE[:-2] + bytes.fromhex('0509090d'), 1)
+    logger.info("Mapped Xbox button layout to Linux gamepad codes")
     return result
 
 
