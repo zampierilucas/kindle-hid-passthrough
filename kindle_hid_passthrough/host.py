@@ -648,6 +648,11 @@ class HIDHost(ClassicMixin, BLEMixin):
         log.warning(f"[{proto}] Device disconnected: {session.address} "
                     f"(reason={reason} {HCI_Constant.error_name(reason)}) "
                     f"after {uptime:.1f}s {state}")
+        params = getattr(session.connection, 'parameters', None)
+        if session.protocol == Protocol.BLE and params is not None:
+            log.info(f"[BLE] Link had interval {params.connection_interval}ms, "
+                     f"latency {params.peripheral_latency}, "
+                     f"timeout {params.supervision_timeout}ms")
 
         if reason == 5 and session.protocol == Protocol.CLASSIC:
             log.info("[Classic] Authentication failure - will clear stale key and retry")
