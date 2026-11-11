@@ -168,6 +168,11 @@ class BLEMixin:
         if match_kind == 'name' and matched_dev is not None:
             self._save_rotated_address(matched_dev, session.address)
             self._parse_devices()
+        else:
+            dev = self._configured_rpa_for(session.address)
+            if dev is not None:
+                self._save_rotated_address(dev, session.address)
+                self._parse_devices()
 
         self._load_cached_descriptor(session)
         await self._setup_ble_hid(session)
@@ -410,6 +415,25 @@ class BLEMixin:
                 log.info(f"[BLE] {name} advertising from new address {addr_norm}")
                 return (dev, 'name')
 
+        return None
+
+    def _configured_rpa_for(self, addr: str):
+        """Configured device saved under an RPA that resolves to `addr`, or None."""
+        resolver = self.device.address_resolver
+        if not resolver or addr not in self._keystore_addresses:
+            return None
+        if any(normalize_addr(d.address) == addr for d in self.ble_devices):
+            return None
+        for dev in self.ble_devices:
+            if dev.address == '*':
+                continue
+            rpa = Address(dev.address, Address.RANDOM_DEVICE_ADDRESS)
+            if not rpa.is_resolvable:
+                continue
+            resolved = resolver.resolve(rpa)
+            if resolved and normalize_addr(str(resolved)) == addr:
+                log.info(f"[BLE] Resolved {dev.address} to bonded device {self._format_device(addr)}")
+                return dev
         return None
 
     def _save_rotated_address(self, dev, new_addr: str):
