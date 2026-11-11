@@ -297,8 +297,8 @@ class BLEMixin:
 
             await self.device.send_command(
                 HCI_LE_Create_Connection_Command(
-                    le_scan_interval=96,
-                    le_scan_window=96,
+                    le_scan_interval=int(config.ble_scan_interval_ms / 0.625),
+                    le_scan_window=int(config.ble_scan_window_ms / 0.625),
                     initiator_filter_policy=0 if peer is not None else 1,
                     peer_address_type=peer.address_type if peer is not None else 0,
                     peer_address=peer if peer is not None else Address.ANY,
@@ -349,6 +349,8 @@ class BLEMixin:
                 try:
                     await self.device.start_scanning(
                         legacy=True,
+                        scan_interval=config.ble_scan_interval_ms,
+                        scan_window=config.ble_scan_window_ms,
                         own_address_type=OwnAddressType.PUBLIC,
                         filter_duplicates=True,
                     )
