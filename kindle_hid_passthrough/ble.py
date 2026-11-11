@@ -168,6 +168,11 @@ class BLEMixin:
         if match_kind == 'name' and matched_dev is not None:
             self._save_rotated_address(matched_dev, session.address)
             self._parse_devices()
+        else:
+            dev = self._configured_rpa_for(session.address)
+            if dev is not None:
+                self._save_rotated_address(dev, session.address)
+                self._parse_devices()
 
         self._load_cached_descriptor(session)
         await self._setup_ble_hid(session)
@@ -292,8 +297,8 @@ class BLEMixin:
 
             await self.device.send_command(
                 HCI_LE_Create_Connection_Command(
-                    le_scan_interval=96,
-                    le_scan_window=96,
+                    le_scan_interval=int(config.ble_scan_interval_ms / 0.625),
+                    le_scan_window=int(config.ble_scan_window_ms / 0.625),
                     initiator_filter_policy=0 if peer is not None else 1,
                     peer_address_type=peer.address_type if peer is not None else 0,
                     peer_address=peer if peer is not None else Address.ANY,
@@ -344,6 +349,8 @@ class BLEMixin:
                 try:
                     await self.device.start_scanning(
                         legacy=True,
+                        scan_interval=config.ble_scan_interval_ms,
+                        scan_window=config.ble_scan_window_ms,
                         own_address_type=OwnAddressType.PUBLIC,
                         filter_duplicates=True,
                     )
@@ -410,6 +417,25 @@ class BLEMixin:
                 log.info(f"[BLE] {name} advertising from new address {addr_norm}")
                 return (dev, 'name')
 
+        return None
+
+    def _configured_rpa_for(self, addr: str):
+        """Configured device saved under an RPA that resolves to `addr`, or None."""
+        resolver = self.device.address_resolver
+        if not resolver or addr not in self._keystore_addresses:
+            return None
+        if any(normalize_addr(d.address) == addr for d in self.ble_devices):
+            return None
+        for dev in self.ble_devices:
+            if dev.address == '*':
+                continue
+            rpa = Address(dev.address, Address.RANDOM_DEVICE_ADDRESS)
+            if not rpa.is_resolvable:
+                continue
+            resolved = resolver.resolve(rpa)
+            if resolved and normalize_addr(str(resolved)) == addr:
+                log.info(f"[BLE] Resolved {dev.address} to bonded device {self._format_device(addr)}")
+                return dev
         return None
 
     def _save_rotated_address(self, dev, new_addr: str):
