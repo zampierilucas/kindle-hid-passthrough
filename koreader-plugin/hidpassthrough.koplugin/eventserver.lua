@@ -1,4 +1,5 @@
 local Event = require("ui/event")
+local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local util = require("util")
@@ -52,12 +53,67 @@ function M.parseRequest(data)
     return args, n
 end
 
+-- A held or quickly repeated button sends one event per press. Close the
+-- notifications already on screen so each new one replaces the last instead
+-- of stacking below it.
+local function closeNotifications()
+    local shown = {}
+    local n = 1
+    local widget = UIManager:getNthTopWidget(n)
+    while widget do
+        if getmetatable(widget) == Notification then
+            table.insert(shown, widget)
+        end
+        n = n + 1
+        widget = UIManager:getNthTopWidget(n)
+    end
+    for dummy, notification in ipairs(shown) do -- luacheck: ignore dummy
+        UIManager:close(notification)
+    end
+end
+
+-- Page buttons send GotoViewRel, which only the reader handles. When a menu,
+-- list or the file browser is on top instead, turn its page: those widgets
+-- answer NextPage/PrevPage, the events physical page keys raise.
+local function sendPageEvent(args, n)
+    if args[1] ~= "GotoViewRel" or n ~= 2 or type(args[2]) ~= "number" then
+        return false
+    end
+    local top
+    for i = #UIManager._window_stack, 1, -1 do
+        local widget = UIManager._window_stack[i].widget
+        if not widget.toast then
+            top = widget
+            break
+        end
+    end
+    local ReaderUI = package.loaded["apps/reader/readerui"]
+    if not top or (ReaderUI and top == ReaderUI.instance) then
+        return false
+    end
+    local name = args[2] > 0 and "NextPage" or "PrevPage"
+    for dummy = 1, math.abs(args[2]) do -- luacheck: ignore dummy
+        if not top:handleEvent(Event:new(name)) then
+            return false
+        end
+    end
+    return true
+end
+
 local function onRequest(data, client)
     local args, n = M.parseRequest(data)
     local code, body
     if args then
         UIManager:nextTick(function()
-            UIManager:sendEvent(Event:new(table.unpack(args, 1, n)))
+            closeNotifications()
+            -- Report mapped buttons as "all other sources", so KOReader's
+            -- Notifications setting decides whether their popups show.
+            -- Until a gesture or the bottom menu sets a source, it is nil
+            -- and KOReader drops every popup.
+            Notification:resetNotifySource()
+            if not sendPageEvent(args, n) then
+                UIManager:sendEvent(Event:new(table.unpack(args, 1, n)))
+            end
         end)
         code, body = "200 OK", "OK"
     else
