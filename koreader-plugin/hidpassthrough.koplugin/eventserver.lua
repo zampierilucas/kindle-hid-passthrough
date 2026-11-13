@@ -78,6 +78,11 @@ local function onRequest(data, client)
     if args then
         UIManager:nextTick(function()
             closeNotifications()
+            -- Report mapped buttons as "all other sources", so KOReader's
+            -- Notifications setting decides whether their popups show.
+            -- Until a gesture or the bottom menu sets a source, it is nil
+            -- and KOReader drops every popup.
+            Notification:resetNotifySource()
             UIManager:sendEvent(Event:new(table.unpack(args, 1, n)))
         end)
         code, body = "200 OK", "OK"
