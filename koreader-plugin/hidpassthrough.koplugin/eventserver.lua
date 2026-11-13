@@ -1,4 +1,5 @@
 local Event = require("ui/event")
+local Notification = require("ui/widget/notification")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local util = require("util")
@@ -52,11 +53,31 @@ function M.parseRequest(data)
     return args, n
 end
 
+-- A held or quickly repeated button sends one event per press. Close the
+-- notifications already on screen so each new one replaces the last instead
+-- of stacking below it.
+local function closeNotifications()
+    local shown = {}
+    local n = 1
+    local widget = UIManager:getNthTopWidget(n)
+    while widget do
+        if getmetatable(widget) == Notification then
+            table.insert(shown, widget)
+        end
+        n = n + 1
+        widget = UIManager:getNthTopWidget(n)
+    end
+    for dummy, notification in ipairs(shown) do -- luacheck: ignore dummy
+        UIManager:close(notification)
+    end
+end
+
 local function onRequest(data, client)
     local args, n = M.parseRequest(data)
     local code, body
     if args then
         UIManager:nextTick(function()
+            closeNotifications()
             UIManager:sendEvent(Event:new(table.unpack(args, 1, n)))
         end)
         code, body = "200 OK", "OK"
