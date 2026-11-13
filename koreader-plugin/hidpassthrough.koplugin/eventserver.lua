@@ -72,6 +72,34 @@ local function closeNotifications()
     end
 end
 
+-- Page buttons send GotoViewRel, which only the reader handles. When a menu,
+-- list or the file browser is on top instead, turn its page: those widgets
+-- answer NextPage/PrevPage, the events physical page keys raise.
+local function sendPageEvent(args, n)
+    if args[1] ~= "GotoViewRel" or n ~= 2 or type(args[2]) ~= "number" then
+        return false
+    end
+    local top
+    for i = #UIManager._window_stack, 1, -1 do
+        local widget = UIManager._window_stack[i].widget
+        if not widget.toast then
+            top = widget
+            break
+        end
+    end
+    local ReaderUI = package.loaded["apps/reader/readerui"]
+    if not top or (ReaderUI and top == ReaderUI.instance) then
+        return false
+    end
+    local name = args[2] > 0 and "NextPage" or "PrevPage"
+    for dummy = 1, math.abs(args[2]) do -- luacheck: ignore dummy
+        if not top:handleEvent(Event:new(name)) then
+            return false
+        end
+    end
+    return true
+end
+
 local function onRequest(data, client)
     local args, n = M.parseRequest(data)
     local code, body
@@ -83,7 +111,9 @@ local function onRequest(data, client)
             -- Until a gesture or the bottom menu sets a source, it is nil
             -- and KOReader drops every popup.
             Notification:resetNotifySource()
-            UIManager:sendEvent(Event:new(table.unpack(args, 1, n)))
+            if not sendPageEvent(args, n) then
+                UIManager:sendEvent(Event:new(table.unpack(args, 1, n)))
+            end
         end)
         code, body = "200 OK", "OK"
     else
