@@ -22,6 +22,7 @@ from bumble.gatt import (
 from bumble.hci import (
     Address,
     HCI_COMMAND_DISALLOWED_ERROR,
+    HCI_Command_Complete_Event,
     HCI_Constant,
     HCI_Error,
     HCI_LE_Add_Device_To_Filter_Accept_List_Command,
@@ -29,6 +30,7 @@ from bumble.hci import (
     HCI_LE_Connection_Update_Command,
     HCI_LE_Create_Connection_Cancel_Command,
     HCI_LE_Create_Connection_Command,
+    HCI_UNSPECIFIED_ERROR_ERROR,
     OwnAddressType,
     Role,
 )
@@ -57,6 +59,7 @@ class BLEMixin:
     BLE_PARAM_UPDATE_TIMEOUT = 45.0
     BLE_SCAN_START_RETRIES = 3
     BLE_SCAN_START_RETRY_DELAY = 0.5
+    BLE_REFUSED_LIMIT = 3
 
     async def _run_ble_handler(self):
         """Handle BLE connections."""
@@ -100,6 +103,7 @@ class BLEMixin:
         """Connect to configured BLE devices using the filter accept list."""
         log.info("[BLE] Accept-list handler running")
 
+        refused = 0
         while True:
             try:
                 missing = self._ble_missing_addresses()
@@ -112,6 +116,7 @@ class BLEMixin:
                 matched_dev = None
                 match_kind = None
                 connection = await self._ble_initiate(self.BLE_INIT_WINDOW)
+                refused = 0
 
                 if connection is None:
                     match = await self._ble_scan_for_rotated(known, self.BLE_SCAN_WINDOW)
@@ -127,6 +132,13 @@ class BLEMixin:
 
             except asyncio.CancelledError:
                 raise
+            except HCI_Error as e:
+                refused += 1
+                log.warning(f"[BLE] Controller refused to connect "
+                            f"({refused}/{self.BLE_REFUSED_LIMIT}): {e}")
+                if refused >= self.BLE_REFUSED_LIMIT:
+                    raise InvalidStateError("[BLE] Controller keeps refusing to connect, resetting it")
+                await asyncio.sleep(2.0)
             except Exception as e:
                 log.warning(f"[BLE] Connection failed: {e}")
                 await asyncio.sleep(2.0)
@@ -185,6 +197,9 @@ class BLEMixin:
             ChannelManager.on_l2cap_connection_parameter_update_request(manager, connection, cid, request)
             return
 
+        log.info(f"[BLE] {connection.peer_address} requested interval "
+                 f"{request.interval_min * 1.25}-{request.interval_max * 1.25}ms, "
+                 f"latency {request.latency}, timeout {request.timeout * 10}ms")
         manager.send_control_frame(connection, cid, L2CAP_Connection_Parameter_Update_Response(
             identifier=request.identifier,
             result=L2CAP_CONNECTION_PARAMETERS_ACCEPTED_RESULT,
@@ -295,7 +310,7 @@ class BLEMixin:
             self.device.connect_own_address_type = OwnAddressType.PUBLIC
             self.device.le_connecting = True
 
-            await self.device.send_command(
+            response = await self.device.send_command(
                 HCI_LE_Create_Connection_Command(
                     le_scan_interval=int(config.ble_scan_interval_ms / 0.625),
                     le_scan_window=int(config.ble_scan_window_ms / 0.625),
@@ -310,6 +325,10 @@ class BLEMixin:
                     min_ce_length=0,
                     max_ce_length=0,
                 ), check_result=True)
+            # A refused create comes back as Command Complete, which bumble reports as success.
+            if isinstance(response, HCI_Command_Complete_Event):
+                raw = getattr(response.return_parameters, 'data', response.return_parameters)
+                raise HCI_Error((raw[0] if raw else 0) or HCI_UNSPECIFIED_ERROR_ERROR)
 
             try:
                 return await asyncio.wait_for(asyncio.shield(pending), timeout=window)
