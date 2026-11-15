@@ -16,6 +16,7 @@ from bt_setup import chip
 from config import Protocol, config, normalize_addr
 from device_cache import DeviceCache
 from logging_utils import errstr
+from pairing import clear_pin
 
 logger = logging.getLogger(__name__)
 
@@ -187,16 +188,22 @@ class DaemonController:
                 success = await self.daemon.pair(address, protocol, name)
                 if success:
                     config.add_device(address, protocol, name)
-                self.pair_result = {
-                    "ok": success,
-                    "address": address,
-                    **({"message": "Paired successfully"} if success
-                       else {"error": "Pairing failed"}),
-                }
+                # False when Classic pairing connected but no link key was
+                # saved, so the device will refuse reconnects.
+                bonded = getattr(self.daemon._paired_host, 'pair_bonded', None)
+                if success and bonded is False:
+                    message = {"message": "Connected, but no link key was saved",
+                               "bonded": False}
+                elif success:
+                    message = {"message": "Paired successfully"}
+                else:
+                    message = {"error": "Pairing failed"}
+                self.pair_result = {"ok": success, "address": address, **message}
             except Exception as e:
                 logger.error(f"Pair failed: {errstr(e)}")
                 self.pair_result = {"ok": False, "address": address, "error": str(e)}
             finally:
+                clear_pin()
                 self.is_pairing = False
                 await self._resume_if_enabled()
 

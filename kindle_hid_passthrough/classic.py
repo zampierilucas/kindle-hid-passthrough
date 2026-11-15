@@ -522,6 +522,7 @@ class ClassicMixin:
     async def _pair_classic(self, address: str) -> bool:
         """Pair with a Classic Bluetooth device."""
         log.info(f"[Classic] Pairing with {address}...")
+        self.pair_bonded = None
 
         try:
             target_address = Address(address, Address.PUBLIC_DEVICE_ADDRESS)
@@ -552,7 +553,8 @@ class ClassicMixin:
         try:
             log.info("[Classic] Authenticating...")
             try:
-                await asyncio.wait_for(connection.authenticate(), timeout=30.0)
+                # Legacy keyboards need time for the user to type the PIN.
+                await asyncio.wait_for(connection.authenticate(), timeout=60.0)
                 log.success("[Classic] Authentication complete")
             except Exception as e:
                 log.warning(f"[Classic] Authentication: {errstr(e)}")
@@ -578,7 +580,8 @@ class ClassicMixin:
 
             if self.keystore:
                 keys = await self.keystore.get(str(connection.peer_address))
-                if keys and keys.link_key:
+                self.pair_bonded = bool(keys and keys.link_key)
+                if self.pair_bonded:
                     log.success("[Classic] Link key verified")
                 else:
                     log.warning("[Classic] Link key not found in keystore!")

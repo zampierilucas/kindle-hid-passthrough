@@ -1282,8 +1282,19 @@ function HIDPassthrough:_doPollPair(tick)
     end
 
     if data.pairing then
-        if tick > 30 then
+        -- Legacy keyboards: show the PIN the user has to type on them.
+        if data.pin and data.pin ~= self._pair_pin then
+            self._pair_pin = data.pin
+            if self._pair_msg then UIManager:close(self._pair_msg) end
+            self._pair_msg = InfoMessage:new{
+                text = T(_("Type %1 on the keyboard, then press Enter."), data.pin),
+                dismissable = true,
+            }
+            UIManager:show(self._pair_msg)
+        end
+        if tick > 45 then
             if self._pair_msg then UIManager:close(self._pair_msg); self._pair_msg = nil end
+            self._pair_pin = nil
             infoToast(_("Pairing timed out"), true)
             return
         end
@@ -1291,8 +1302,12 @@ function HIDPassthrough:_doPollPair(tick)
         return
     end
 
+    self._pair_pin = nil
     if self._pair_msg then UIManager:close(self._pair_msg); self._pair_msg = nil end
-    if data.ok then
+    if data.ok and data.bonded == false then
+        infoToast(T(_("%1: %2"), data.message, data.address or ""), true)
+        self:_afterDeviceAction()
+    elseif data.ok then
         infoToast(T(_("Paired: %1"), data.address or ""))
         self:_afterDeviceAction()
     else
