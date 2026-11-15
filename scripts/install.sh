@@ -1,7 +1,18 @@
 #!/bin/sh
 
-trap '/usr/sbin/mntroot ro 2>/dev/null' EXIT
+trap rootRo EXIT
 trap 'exit 130' INT TERM HUP
+
+rootRo()
+{
+  /usr/sbin/mntroot ro 2>/dev/null
+  awk '$2 == "/" { o = $4 } END { exit (o !~ /^rw(,|$)/) }' /proc/mounts || return 0
+  echo ""
+  echo "WARNING: the root filesystem is still writable, mntroot ro failed."
+  echo "Reboot the Kindle now. A crash before then can fill root with core"
+  echo "dumps and leave the Kindle unable to boot."
+  return 1
+}
 
 INSTALL_DIR="/mnt/us/kindle_hid_passthrough"
 MAPPER_DIR="/mnt/us/kindle-button-mapper"
@@ -150,6 +161,30 @@ installMainFiles()
   echo " -> Ready."
 }
 
+hasRecovery()
+{
+  [ -f /etc/upstart/jobman_recovery.conf ] && return 0
+  [ -f /etc/upstart/usbnetlite.conf ] && [ -f /mnt/us/usbnetlite/auto ]
+}
+
+confirmNoRecovery()
+{
+  hasRecovery && return 0
+  echo ""
+  echo "WARNING: no recovery tool found."
+  echo "Neither Jobman recovery nor usbnetlite with autostart is set up. If this"
+  echo "Kindle ends up in a boot loop there is no way back in without one."
+  echo "  Firmware 5.16+  ;kpm install jobman, then Recovery Management > Install Recovery"
+  echo "  Older firmware  usbnetlite via MRPI, plus an empty /mnt/us/usbnetlite/auto"
+  [ -t 0 ] || return 0
+  printf "Install anyway? [y/N]: "
+  read confirm
+  case "$confirm" in
+    y|Y|yes|YES) return 0 ;;
+    *) echo "Aborted."; return 1 ;;
+  esac
+}
+
 installAll()
 {
   echo ""
@@ -160,6 +195,7 @@ installAll()
     echo "=== Full Install ==="
   fi
 
+  confirmNoRecovery || return 1
   stopDaemon
   if ! installMainFiles; then
     echo ""
@@ -192,7 +228,7 @@ installUdevRules()
   /usr/sbin/mntroot rw
   cp "$SRC_DIR/assets/99-hid-keyboard.rules" /etc/udev/rules.d
   /usr/sbin/udevadm control --reload-rules
-  /usr/sbin/mntroot ro
+  rootRo
   echo " -> Ready."
 }
 
@@ -257,7 +293,7 @@ installUpstart()
   rm -f "$INSTALL_DIR/boot_attempts"
   /usr/sbin/mntroot rw
   cp "$SRC_DIR/assets/hid-passthrough.upstart" /etc/upstart/hid-passthrough.conf
-  /usr/sbin/mntroot ro
+  rootRo
   # upstart only picks up a newly dropped .conf after a config reload, without
   # this the job stays unknown and the start below fails until a reboot.
   /sbin/initctl reload-configuration 2>/dev/null || true
@@ -269,7 +305,7 @@ removeUpstart()
   echo " -> Removing upstart service"
   /usr/sbin/mntroot rw
   rm -f /etc/upstart/hid-passthrough.conf
-  /usr/sbin/mntroot ro
+  rootRo
   /sbin/initctl reload-configuration 2>/dev/null || true
   echo " -> Ready."
 }
@@ -318,6 +354,7 @@ installButtonMapper()
   else
     echo " -> WARNING: Button Mapper install failed, gamepad mapping will be unavailable"
   fi
+  rootRo
   return 0
 }
 
@@ -399,7 +436,7 @@ EOF
     done
   fi
 
-  /usr/sbin/mntroot ro
+  rootRo
 
   uninstallButtonMapper
 
