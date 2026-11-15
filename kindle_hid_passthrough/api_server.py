@@ -31,6 +31,7 @@ from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
 
 from config import Protocol, config, get_version, normalize_addr
+from pairing import current_pin
 
 __all__ = ['APIServer', 'RequestHandler', 'PORT']
 
@@ -227,7 +228,8 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _handle_pair_status(self):
         controller = self._controller
         if controller.is_pairing:
-            self._send_json({"ok": True, "pairing": True})
+            pin = current_pin()
+            self._send_json({"ok": True, "pairing": True, **({"pin": pin} if pin else {})})
             return
         if controller.pair_result is not None:
             self._send_json(controller.pair_result)
