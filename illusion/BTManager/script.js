@@ -721,7 +721,6 @@ var BTManager = (function() {
                     return;
                 }
                 if (data && data.pairing) {
-                    // Legacy keyboards: show the PIN the user has to type on them.
                     getEl("pairMessage").innerHTML = data.pin
                         ? "Type <b>" + data.pin + "</b> on the keyboard, then press Enter"
                         : "Pairing in progress...";
@@ -729,10 +728,7 @@ var BTManager = (function() {
                     return;
                 }
                 resetPairUI();
-                if (data && data.ok && data.bonded === false) {
-                    showMessage(data.message + ": " + (data.address || ""), true);
-                    updateStatus();
-                } else if (data && data.ok) {
+                if (data && data.ok) {
                     showMessage("Paired: " + (data.address || ""), false);
                     getEl("availableList").innerHTML = "";
                     getEl("availableSection").style.display = "none";

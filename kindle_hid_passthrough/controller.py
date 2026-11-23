@@ -170,6 +170,7 @@ class DaemonController:
         if self.is_pairing:
             return
         self.pair_result = None
+        clear_pin()
         self.is_pairing = True  # Set immediately so status polls see it
         asyncio.run_coroutine_threadsafe(
             self._do_pair(address, protocol, name), self.loop
@@ -188,17 +189,12 @@ class DaemonController:
                 success = await self.daemon.pair(address, protocol, name)
                 if success:
                     config.add_device(address, protocol, name)
-                # False when Classic pairing connected but no link key was
-                # saved, so the device will refuse reconnects.
-                bonded = getattr(self.daemon._paired_host, 'pair_bonded', None)
-                if success and bonded is False:
-                    message = {"message": "Connected, but no link key was saved",
-                               "bonded": False}
-                elif success:
-                    message = {"message": "Paired successfully"}
-                else:
-                    message = {"error": "Pairing failed"}
-                self.pair_result = {"ok": success, "address": address, **message}
+                self.pair_result = {
+                    "ok": success,
+                    "address": address,
+                    **({"message": "Paired successfully"} if success
+                       else {"error": "Pairing failed"}),
+                }
             except Exception as e:
                 logger.error(f"Pair failed: {errstr(e)}")
                 self.pair_result = {"ok": False, "address": address, "error": str(e)}
