@@ -16,6 +16,7 @@ from bt_setup import chip
 from config import Protocol, config, normalize_addr
 from device_cache import DeviceCache
 from logging_utils import errstr
+from pairing import clear_pin
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,7 @@ class DaemonController:
         if self.is_pairing:
             return
         self.pair_result = None
+        clear_pin()
         self.is_pairing = True  # Set immediately so status polls see it
         asyncio.run_coroutine_threadsafe(
             self._do_pair(address, protocol, name), self.loop
@@ -197,6 +199,7 @@ class DaemonController:
                 logger.error(f"Pair failed: {errstr(e)}")
                 self.pair_result = {"ok": False, "address": address, "error": str(e)}
             finally:
+                clear_pin()
                 self.is_pairing = False
                 await self._resume_if_enabled()
 

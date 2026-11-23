@@ -29,7 +29,7 @@ from config import Protocol, clean_device_name, config, get_version, normalize_a
 from device_cache import DeviceCache
 from logging_utils import errstr, log
 from media_remote import MEDIA_REMOTE_COD, MediaRemote
-from pairing import create_keystore, create_pairing_config
+from pairing import create_keystore, create_pairing_config, install_legacy_pin_handler
 from transport import create_bumble_device
 from uhid_handler import (
     Bus,
@@ -381,6 +381,8 @@ class HIDHost(ClassicMixin, BLEMixin):
             self.transport_spec, configure=configure)
         self.device.l2cap_channel_manager.on_l2cap_connection_parameter_update_request = \
             self._on_l2cap_conn_param_request
+        if pairing:
+            install_legacy_pin_handler(self.device)
 
         if self.device.address_resolution_offload:
             await self._set_device_privacy_modes()

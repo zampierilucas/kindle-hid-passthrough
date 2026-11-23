@@ -721,7 +721,9 @@ var BTManager = (function() {
                     return;
                 }
                 if (data && data.pairing) {
-                    getEl("pairMessage").innerHTML = "Pairing in progress...";
+                    getEl("pairMessage").innerHTML = data.pin
+                        ? "Type <b>" + data.pin + "</b> on the keyboard, then press Enter"
+                        : "Pairing in progress...";
                     pollPairStatus();
                     return;
                 }

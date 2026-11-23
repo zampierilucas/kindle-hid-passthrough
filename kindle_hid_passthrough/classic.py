@@ -552,7 +552,7 @@ class ClassicMixin:
         try:
             log.info("[Classic] Authenticating...")
             try:
-                await asyncio.wait_for(connection.authenticate(), timeout=30.0)
+                await asyncio.wait_for(connection.authenticate(), timeout=60.0)
                 log.success("[Classic] Authentication complete")
             except Exception as e:
                 log.warning(f"[Classic] Authentication: {errstr(e)}")
@@ -578,10 +578,13 @@ class ClassicMixin:
 
             if self.keystore:
                 keys = await self.keystore.get(str(connection.peer_address))
-                if keys and keys.link_key:
-                    log.success("[Classic] Link key verified")
-                else:
-                    log.warning("[Classic] Link key not found in keystore!")
+                if not (keys and keys.link_key):
+                    log.error("[Classic] Pairing failed: no link key saved")
+                    self.device.host.remove_listener('link_key', on_device_link_key)
+                    await session.cleanup()
+                    self._pairing_session = None
+                    return False
+                log.success("[Classic] Link key verified")
 
             self.device.host.remove_listener('link_key', on_device_link_key)
             return True
